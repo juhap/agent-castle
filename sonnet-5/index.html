@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Medieval Castle on a Hill</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #87b6d6; height: 100%; }
+  canvas { display: block; }
+  #loading {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-family: Georgia, serif; font-size: 20px; letter-spacing: 2px;
+    background: #6f92b3; z-index: 10;
+  }
+</style>
+</head>
+<body>
+<div id="loading">Loading castle&hellip;</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ---------- Seeded RNG (deterministic layout) ----------
+  var seed = 1337;
+  function rand() {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+  }
+  function randRange(a, b) { return a + rand() * (b - a); }
+
+  function hash2(x, y) {
+    var s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+    return s - Math.floor(s);
+  }
+  function noise2D(x, y) {
+    var xi = Math.floor(x), yi = Math.floor(y);
+    var xf = x - xi, yf = y - yi;
+    var v00 = hash2(xi, yi), v10 = hash2(xi + 1, yi);
+    var v01 = hash2(xi, yi + 1), v11 = hash2(xi + 1, yi + 1);
+    var u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    var a = v00 + (v10 - v00) * u;
+    var b = v01 + (v11 - v01) * u;
+    return a + (b - a) * v;
+  }
+  function fbm(x, y) {
+    return noise2D(x, y) * 0.6 + noise2D(x * 2.1, y * 2.1) * 0.3 + noise2D(x * 4.3, y * 4.3) * 0.1;
+  }
+
+  // ---------- Renderer / Scene / Camera ----------
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  var skyColor = 0x8fc1e3;
+  scene.background = new THREE.Color(skyColor);
+  scene.fog = new THREE.FogExp2(skyColor, 0.0032);
+
+  var camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000);
+
+  window.addEventListener("resize", function () {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // ---------- Lighting ----------
+  var hemi = new THREE.HemisphereLight(0xbfe3ff, 0x3a4a2a, 0.75);
+  scene.add(hemi);
+
+  var sun = new THREE.DirectionalLight(0xfff3d6, 1.1);
+  sun.position.set(120, 160, 80);
+  sun.castShadow = true;
+  sun.shadow.mapSize.width = 2048;
+  sun.shadow.mapSize.height = 2048;
+  sun.shadow.camera.near = 10;
+  sun.shadow.camera.far = 500;
+  sun.shadow.camera.left = -150;
+  sun.shadow.camera.right = 150;
+  sun.shadow.camera.top = 150;
+  sun.shadow.camera.bottom = -150;
+  sun.shadow.bias = -0.0018;
+  scene.add(sun);
+
+  var ambient = new THREE.AmbientLight(0x8899aa, 0.25);
+  scene.add(ambient);
+
+  // ---------- Ground (forest floor) ----------
+  var groundSize = 900;
+  var groundSeg = 140;
+
+  var hillHeight = 16;
+  var hillPlateauRadius = 30; // flat top the castle platform sits on (solid, no gap)
+  var hillSlopeWidth = 46; // distance over which the hill descends to the plain
+
+  function terrainHeight(x, z) {
+    var d = Math.sqrt(x * x + z * z);
+    var baseNoise = fbm(x * 0.03, z * 0.03) * 3.2;
+    if (d <= hillPlateauRadius) {
+      return hillHeight;
+    }
+    var t = Math.min(1, (d - hillPlateauRadius) / hillSlopeWidth);
+    var shape = Math.cos(t * Math.PI * 0.5); // 1 at plateau edge -> 0 at outer edge
+    var hillY = hillHeight * Math.pow(shape, 1.6);
+    return baseNoise * t + hillY;
+  }
+
+  var groundGeo = new THREE.PlaneGeometry(groundSize, groundSize, groundSeg, groundSeg);
+  groundGeo.rotateX(-Math.PI / 2);
+
+  var gPos = groundGeo.attributes.position;
+  for (var i = 0; i < gPos.count; i++) {
+    var gx = gPos.getX(i), gz = gPos.getZ(i);
+    gPos.setY(i, terrainHeight(gx, gz));
+  }
+  groundGeo.computeVertexNormals();
+
+  var groundMat = new THREE.MeshStandardMaterial({ color: 0x4c7a34, roughness: 1, flatShading: true });
+  var ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // ---------- Forest (instanced low-poly pine trees) ----------
+  var treeCount = 420;
+  var trunkGeo = new THREE.CylinderGeometry(0.25, 0.35, 2.2, 6);
+  trunkGeo.translate(0, 1.1, 0);
+  var trunkMat = new THREE.MeshStandardMaterial({ color: 0x5a3d24, roughness: 1, flatShading: true });
+  var trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
+  trunkMesh.castShadow = true;
+  trunkMesh.receiveShadow = true;
+
+  var foliageGeo = new THREE.ConeGeometry(1.6, 4.2, 7);
+  foliageGeo.translate(0, 4.2, 0);
+  var foliageMat = new THREE.MeshStandardMaterial({ color: 0x2f6b34, roughness: 1, flatShading: true });
+  var foliageMesh = new THREE.InstancedMesh(foliageGeo, foliageMat, treeCount);
+  foliageMesh.castShadow = true;
+  foliageMesh.receiveShadow = true;
+
+  var dummy = new THREE.Object3D();
+  var placed = 0;
+  var attempts = 0;
+  while (placed < treeCount && attempts < treeCount * 6) {
+    attempts++;
+    var angle = randRange(0, Math.PI * 2);
+    var radius = randRange(hillPlateauRadius + hillSlopeWidth + 6, groundSize * 0.46);
+    var tx = Math.cos(angle) * radius;
+    var tz = Math.sin(angle) * radius;
+    var ty = terrainHeight(tx, tz);
+    var scale = randRange(0.7, 1.5);
+    var rot = randRange(0, Math.PI * 2);
+
+    dummy.position.set(tx, ty, tz);
+    dummy.rotation.set(0, rot, 0);
+    dummy.scale.set(scale, scale * randRange(0.85, 1.25), scale);
+    dummy.updateMatrix();
+    trunkMesh.setMatrixAt(placed, dummy.matrix);
+    foliageMesh.setMatrixAt(placed, dummy.matrix);
+    placed++;
+  }
+  trunkMesh.instanceMatrix.needsUpdate = true;
+  foliageMesh.instanceMatrix.needsUpdate = true;
+  scene.add(trunkMesh);
+  scene.add(foliageMesh);
+
+  // ---------- Castle ----------
+  var castleGroup = new THREE.Group();
+  var hillTopY = hillHeight;
+  castleGroup.position.set(0, hillTopY, 0);
+  scene.add(castleGroup);
+
+  var stoneMat = new THREE.MeshStandardMaterial({ color: 0x8a8a86, roughness: 0.95, flatShading: true });
+  var stoneDarkMat = new THREE.MeshStandardMaterial({ color: 0x6f6f6b, roughness: 0.95, flatShading: true });
+  var roofMat = new THREE.MeshStandardMaterial({ color: 0x7a2e2e, roughness: 0.8, flatShading: true });
+  var doorMat = new THREE.MeshStandardMaterial({ color: 0x3a2718, roughness: 1 });
+
+  function addMesh(geo, mat, x, y, z, castShadow, receiveShadow) {
+    var m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = castShadow !== false;
+    m.receiveShadow = receiveShadow !== false;
+    castleGroup.add(m);
+    return m;
+  }
+
+  // Courtyard base platform
+  var platformGeo = new THREE.CylinderGeometry(26, 28, 2, 8);
+  addMesh(platformGeo, stoneDarkMat, 0, 1, 0);
+
+  // Perimeter wall (square ring built from 4 boxes)
+  var wallHalf = 15;
+  var wallHeight = 7;
+  var wallThickness = 1.6;
+  var wallY = 2 + wallHeight / 2;
+
+  addMesh(new THREE.BoxGeometry(wallHalf * 2 + wallThickness, wallHeight, wallThickness), stoneMat, 0, wallY, -wallHalf);
+  addMesh(new THREE.BoxGeometry(wallHalf * 2 + wallThickness, wallHeight, wallThickness), stoneMat, 0, wallY, wallHalf);
+  addMesh(new THREE.BoxGeometry(wallThickness, wallHeight, wallHalf * 2), stoneMat, -wallHalf, wallY, 0);
+  addMesh(new THREE.BoxGeometry(wallThickness, wallHeight, wallHalf * 2), stoneMat, wallHalf, wallY, 0);
+
+  // Merlons (crenellations) along the wall tops, instanced
+  var merlonGeo = new THREE.BoxGeometry(1.1, 1.1, 1.1);
+  var merlonCountPerSide = 9;
+  var merlonTotal = merlonCountPerSide * 4;
+  var merlonMesh = new THREE.InstancedMesh(merlonGeo, stoneMat, merlonTotal);
+  merlonMesh.castShadow = true;
+  merlonMesh.receiveShadow = true;
+  var mIdx = 0;
+  var merlonY = 2 + wallHeight + 0.55;
+  for (var side = 0; side < 4; side++) {
+    for (var k = 0; k < merlonCountPerSide; k++) {
+      var frac2 = (k / (merlonCountPerSide - 1)) * 2 - 1;
+      var pos = frac2 * (wallHalf - 0.5);
+      var mx = 0, mz = 0;
+      if (side === 0) { mx = pos; mz = -wallHalf; }
+      else if (side === 1) { mx = pos; mz = wallHalf; }
+      else if (side === 2) { mx = -wallHalf; mz = pos; }
+      else { mx = wallHalf; mz = pos; }
+      dummy.position.set(mx, merlonY, mz);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      merlonMesh.setMatrixAt(mIdx++, dummy.matrix);
+    }
+  }
+  merlonMesh.instanceMatrix.needsUpdate = true;
+  castleGroup.add(merlonMesh);
+
+  // Corner towers with conical roofs
+  var towerRadius = 2.6;
+  var towerHeight = 11;
+  var towerCornerY = 2 + towerHeight / 2;
+  var corners = [[-wallHalf, -wallHalf], [wallHalf, -wallHalf], [-wallHalf, wallHalf], [wallHalf, wallHalf]];
+  var towerRoofHeight = 4.2;
+  corners.forEach(function (c) {
+    addMesh(new THREE.CylinderGeometry(towerRadius, towerRadius, towerHeight, 10), stoneMat, c[0], towerCornerY, c[1]);
+    addMesh(new THREE.ConeGeometry(towerRadius + 0.5, towerRoofHeight, 10), roofMat, c[0], 2 + towerHeight + towerRoofHeight / 2, c[1]);
+  });
+
+  // Gatehouse (front, +z side)
+  var gateWidth = 5;
+  var gateHeight = 6;
+  addMesh(new THREE.BoxGeometry(gateWidth, gateHeight, wallThickness + 1.4), stoneDarkMat, 0, 2 + gateHeight / 2, wallHalf);
+  addMesh(new THREE.BoxGeometry(2.4, 3.6, wallThickness + 1.6), doorMat, 0, 2 + 1.8, wallHalf);
+
+  // Central keep
+  var keepWidth = 9;
+  var keepDepth = 9;
+  var keepHeight = 15;
+  var keepBaseY = 2;
+  var keepY = keepBaseY + keepHeight / 2;
+  addMesh(new THREE.BoxGeometry(keepWidth, keepHeight, keepDepth), stoneMat, 0, keepY, 0);
+
+  var keepRoofHeight = 5.5;
+  var keepRoofY = keepBaseY + keepHeight + keepRoofHeight / 2;
+  addMesh(new THREE.ConeGeometry(7.2, keepRoofHeight, 4), roofMat, 0, keepRoofY, 0).rotation.y = Math.PI / 4;
+
+  // Small keep merlons ring
+  var keepMerlonGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+  var keepMerlonMesh = new THREE.InstancedMesh(keepMerlonGeo, stoneMat, 12);
+  keepMerlonMesh.castShadow = true;
+  var kmIdx = 0;
+  var keepTopY = keepBaseY + keepHeight + 0.45;
+  for (var side2 = 0; side2 < 4; side2++) {
+    for (var k2 = 0; k2 < 3; k2++) {
+      var frac3 = (k2 / 2) * 2 - 1;
+      var pos2 = frac3 * (keepWidth / 2 - 0.6);
+      var kx = 0, kz = 0;
+      if (side2 === 0) { kx = pos2; kz = -keepDepth / 2; }
+      else if (side2 === 1) { kx = pos2; kz = keepDepth / 2; }
+      else if (side2 === 2) { kx = -keepWidth / 2; kz = pos2; }
+      else { kx = keepWidth / 2; kz = pos2; }
+      dummy.position.set(kx, keepTopY, kz);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      keepMerlonMesh.setMatrixAt(kmIdx++, dummy.matrix);
+    }
+  }
+  keepMerlonMesh.instanceMatrix.needsUpdate = true;
+  castleGroup.add(keepMerlonMesh);
+
+  // ---------- Flag on top of the keep ----------
+  var mastHeight = 5.5;
+  var mastY = keepBaseY + keepHeight + keepRoofHeight + mastHeight / 2;
+  var mastGeo = new THREE.CylinderGeometry(0.09, 0.09, mastHeight, 6);
+  addMesh(mastGeo, stoneDarkMat, 0, mastY, 0);
+
+  var flagWidth = 3.2;
+  var flagHeight = 2;
+  var flagSegX = 12;
+  var flagSegY = 6;
+  var flagGeo = new THREE.PlaneGeometry(flagWidth, flagHeight, flagSegX, flagSegY);
+  var flagMat = new THREE.MeshStandardMaterial({
+    color: 0xb5122a,
+    roughness: 0.7,
+    side: THREE.DoubleSide,
+    flatShading: false
+  });
+  var flag = new THREE.Mesh(flagGeo, flagMat);
+  flag.castShadow = true;
+  // Local plane x runs from -flagWidth/2 (pole edge) to +flagWidth/2 (free edge);
+  // offset so the pole edge sits just outside the mast and the flag extends outward.
+  var flagPoleX = 0.12 + flagWidth / 2;
+  flag.position.set(flagPoleX, mastY + mastHeight / 2 - flagHeight / 2 - 0.15, 0);
+  castleGroup.add(flag);
+
+  var flagBasePositions = flagGeo.attributes.position.array.slice();
+
+  function updateFlagWave(t) {
+    var posAttr = flagGeo.attributes.position;
+    var arr = posAttr.array;
+    for (var vi = 0; vi < posAttr.count; vi++) {
+      var ix = vi * 3;
+      var bx = flagBasePositions[ix];
+      var by = flagBasePositions[ix + 1];
+      var distFromPole = (bx + flagWidth / 2) / flagWidth; // 0 at pole, 1 at free end
+      var wave = Math.sin(bx * 2.2 + t * 5.0) * 0.18 * distFromPole
+                + Math.sin(by * 3.1 + t * 3.3) * 0.06 * distFromPole;
+      arr[ix + 2] = wave;
+      arr[ix] = bx - distFromPole * 0.05 * Math.sin(t * 5.0 + by);
+    }
+    posAttr.needsUpdate = true;
+    flagGeo.computeVertexNormals();
+  }
+
+  // ---------- Camera orbit (no user controls, continuous spin) ----------
+  var orbitTarget = new THREE.Vector3(0, hillTopY + keepHeight * 0.55, 0);
+  var orbitRadius = 78;
+  var orbitBaseHeight = hillTopY + 20;
+  var orbitSpeed = 0.09; // radians per second
+
+  var clock = new THREE.Clock();
+
+  document.getElementById("loading").style.display = "none";
+
+  function animate() {
+    requestAnimationFrame(animate);
+    var t = clock.getElapsedTime();
+
+    var angle = t * orbitSpeed;
+    camera.position.x = Math.cos(angle) * orbitRadius;
+    camera.position.z = Math.sin(angle) * orbitRadius;
+    camera.position.y = orbitBaseHeight + Math.sin(t * 0.15) * 6;
+    camera.lookAt(orbitTarget);
+
+    updateFlagWave(t);
+
+    renderer.render(scene, camera);
+  }
+  animate();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Castle of Alderwatch</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #9bb7be; }
+    body { font-family: Georgia, "Times New Roman", serif; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .vignette {
+      position: fixed; inset: 0; pointer-events: none;
+      background: radial-gradient(circle at 50% 43%, transparent 52%, rgba(14, 24, 24, .19) 100%);
+      z-index: 3;
+    }
+    .title {
+      position: fixed; left: 0; right: 0; top: clamp(22px, 5vh, 52px); z-index: 4;
+      color: rgba(255,255,255,.95); text-align: center; text-transform: uppercase;
+      letter-spacing: .36em; font-size: clamp(14px, 1.55vw, 22px); text-shadow: 0 2px 12px rgba(16,25,20,.48);
+      pointer-events: none; opacity: 0; animation: reveal 2.5s .4s ease-out forwards;
+    }
+    .title small { display: block; margin-top: 10px; font-size: .48em; letter-spacing: .5em; opacity: .73; }
+    @keyframes reveal { to { opacity: 1; } }
+    .loading { position: fixed; inset: 0; display: grid; place-items: center; color: white; background: #91acb4; z-index: 10; letter-spacing: .3em; transition: opacity .8s; }
+    .loaded .loading { opacity: 0; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div class="loading">RAISING THE KEEP…</div>
+  <div class="title">Alderwatch <small>Guardian of the Greenwood</small></div>
+  <div class="vignette"></div>
+
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+
+    // Scene and atmosphere
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x9ebbc4);
+    scene.fog = new THREE.FogExp2(0x91aeb1, 0.0115);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    document.body.prepend(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 260);
+    const clock = new THREE.Clock();
+
+    scene.add(new THREE.HemisphereLight(0xcfe6ee, 0x30452d, 2.25));
+    const sun = new THREE.DirectionalLight(0xffe4bd, 3.2);
+    sun.position.set(-24, 38, 20);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.left = sun.shadow.camera.bottom = -38;
+    sun.shadow.camera.right = sun.shadow.camera.top = 38;
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 100;
+    sun.shadow.bias = -0.0004;
+    scene.add(sun);
+
+    // Palette and reusable materials
+    const mat = {
+      grass: new THREE.MeshStandardMaterial({ color: 0x66835a, roughness: 1 }),
+      grassDark: new THREE.MeshStandardMaterial({ color: 0x3f6343, roughness: 1 }),
+      stone: new THREE.MeshStandardMaterial({ color: 0xa8a18d, roughness: .94 }),
+      stoneDark: new THREE.MeshStandardMaterial({ color: 0x767262, roughness: 1 }),
+      roof: new THREE.MeshStandardMaterial({ color: 0x394451, roughness: .82 }),
+      wood: new THREE.MeshStandardMaterial({ color: 0x4e3020, roughness: .9 }),
+      dark: new THREE.MeshStandardMaterial({ color: 0x171d1b, roughness: 1 }),
+      banner: new THREE.MeshStandardMaterial({ color: 0x982f2c, roughness: .82, side: THREE.DoubleSide }),
+      bannerGold: new THREE.MeshStandardMaterial({ color: 0xe4bc55, roughness: .55, side: THREE.DoubleSide })
+    };
+    const shadow = o => { o.castShadow = true; o.receiveShadow = true; return o; };
+
+    // Broad forest floor and the castle's hill.
+    const floor = shadow(new THREE.Mesh(new THREE.CircleGeometry(125, 96), mat.grassDark));
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -2.65;
+    scene.add(floor);
+
+    const hillGeo = new THREE.SphereGeometry(22, 64, 32);
+    hillGeo.scale(1.32, .42, 1.12);
+    const hill = shadow(new THREE.Mesh(hillGeo, mat.grass));
+    // Bury most of the sphere so its crown meets the castle foundations at y=0.
+    hill.position.y = -9.0;
+    scene.add(hill);
+
+    // A pale winding road cut across the hill.
+    const roadCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, -.36, 9), new THREE.Vector3(6, -1.15, 14),
+      new THREE.Vector3(3, -1.9, 20), new THREE.Vector3(11, -2.52, 29),
+      new THREE.Vector3(17, -2.58, 39)
+    ]);
+    const road = new THREE.Mesh(new THREE.TubeGeometry(roadCurve, 48, 1.05, 8, false),
+      new THREE.MeshStandardMaterial({ color: 0x9a8c6e, roughness: 1 }));
+    road.receiveShadow = true;
+    scene.add(road);
+
+    // Castle builders
+    const castle = new THREE.Group();
+    scene.add(castle);
+
+    function battlements(parent, x, y, z, width, depth, countX = 5, countZ = 0) {
+      const blockGeo = new THREE.BoxGeometry(1.05, .95, 1.18);
+      for (let i = 0; i < countX; i++) {
+        const px = x - width / 2 + .55 + i * (width - 1.1) / Math.max(1, countX - 1);
+        const a = shadow(new THREE.Mesh(blockGeo, mat.stone));
+        a.position.set(px, y, z - depth / 2 + .58); parent.add(a);
+        const b = a.clone(); b.position.z = z + depth / 2 - .58; parent.add(b);
+      }
+      for (let i = 1; i < countZ - 1; i++) {
+        const pz = z - depth / 2 + .58 + i * (depth - 1.16) / (countZ - 1);
+        for (const side of [-1, 1]) {
+          const a = shadow(new THREE.Mesh(blockGeo, mat.stone));
+          a.position.set(x + side * (width / 2 - .55), y, pz); parent.add(a);
+        }
+      }
+    }
+
+    function slit(parent, x, y, z, ry = 0) {
+      const s = new THREE.Mesh(new THREE.BoxGeometry(.24, 1.25, .08), mat.dark);
+      s.position.set(x, y, z); s.rotation.y = ry; parent.add(s);
+    }
+
+    function tower(x, z, radius = 3.15, height = 10, top = true) {
+      const g = new THREE.Group(); g.position.set(x, 0, z); castle.add(g);
+      const body = shadow(new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.06, height, 16), mat.stone));
+      body.position.y = height / 2; g.add(body);
+      const rim = shadow(new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.12, radius * 1.12, .55, 16), mat.stoneDark));
+      rim.position.y = height + .05; g.add(rim);
+      if (top) {
+        for (let i = 0; i < 12; i++) {
+          const a = i / 12 * Math.PI * 2;
+          const merlon = shadow(new THREE.Mesh(new THREE.BoxGeometry(1.12, 1.05, .9), mat.stone));
+          merlon.position.set(Math.cos(a) * radius, height + .67, Math.sin(a) * radius);
+          merlon.rotation.y = -a; g.add(merlon);
+        }
+      }
+      for (const a of [0, Math.PI / 2, Math.PI, Math.PI * 1.5])
+        slit(g, Math.sin(a) * (radius + .02), height * .57, Math.cos(a) * (radius + .02), a);
+      return g;
+    }
+
+    // Curtain walls, corner towers, and a raised central keep.
+    const wallH = 7.1, wallY = wallH / 2;
+    const frontWall = shadow(new THREE.Mesh(new THREE.BoxGeometry(16, wallH, 1.6), mat.stone));
+    frontWall.position.set(0, wallY, 7.2); castle.add(frontWall);
+    const backWall = frontWall.clone(); backWall.position.z = -7.2; castle.add(backWall);
+    const sideWall = shadow(new THREE.Mesh(new THREE.BoxGeometry(1.6, wallH, 14.4), mat.stone));
+    sideWall.position.set(8, wallY, 0); castle.add(sideWall);
+    const sideWall2 = sideWall.clone(); sideWall2.position.x = -8; castle.add(sideWall2);
+    battlements(castle, 0, 7.55, 7.2, 16, 1.6, 9, 0);
+    battlements(castle, 0, 7.55, -7.2, 16, 1.6, 9, 0);
+    battlements(castle, 8, 7.55, 0, 1.6, 14.4, 2, 8);
+    battlements(castle, -8, 7.55, 0, 1.6, 14.4, 2, 8);
+    [[-8,-7.2],[8,-7.2],[-8,7.2],[8,7.2]].forEach(p => tower(...p));
+
+    const keep = shadow(new THREE.Mesh(new THREE.BoxGeometry(9, 13.2, 8), mat.stone));
+    keep.position.y = 6.6; castle.add(keep);
+    const keepBand = shadow(new THREE.Mesh(new THREE.BoxGeometry(9.4, .65, 8.4), mat.stoneDark));
+    keepBand.position.y = 10.7; castle.add(keepBand);
+    battlements(castle, 0, 13.65, 0, 9.6, 8.6, 6, 6);
+
+    // Keep windows and entrance details.
+    for (const x of [-2.4, 0, 2.4]) {
+      slit(castle, x, 8.1, 4.03); slit(castle, x, 11.1, 4.03);
+      slit(castle, x, 8.1, -4.03, Math.PI); slit(castle, x, 11.1, -4.03, Math.PI);
+    }
+    for (const z of [-2.3, 0, 2.3]) {
+      slit(castle, 4.53, 8.8, z, Math.PI / 2); slit(castle, -4.53, 8.8, z, -Math.PI / 2);
+    }
+    const gate = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 4.6), mat.dark);
+    gate.position.set(0, 2.2, 8.015); castle.add(gate);
+    const gateTop = new THREE.Mesh(new THREE.CircleGeometry(1.55, 24, 0, Math.PI), mat.dark);
+    gateTop.position.set(0, 4.5, 8.02); castle.add(gateTop);
+    for (let x = -1.3; x <= 1.31; x += .43) {
+      const bar = shadow(new THREE.Mesh(new THREE.BoxGeometry(.13, 4.8, .14), mat.wood));
+      bar.position.set(x, 2.6, 8.18); castle.add(bar);
+    }
+    for (const y of [1, 2.25, 3.5]) {
+      const bar = shadow(new THREE.Mesh(new THREE.BoxGeometry(3, .13, .14), mat.wood));
+      bar.position.set(0, y, 8.18); castle.add(bar);
+    }
+
+    // Conical watchtower roofs make the silhouette more storybook-medieval.
+    [[-8,-7.2],[8,-7.2],[-8,7.2],[8,7.2]].forEach(([x,z]) => {
+      const roof = shadow(new THREE.Mesh(new THREE.ConeGeometry(3.65, 3.5, 16), mat.roof));
+      roof.position.set(x, 12.35, z); castle.add(roof);
+      const finial = shadow(new THREE.Mesh(new THREE.SphereGeometry(.16, 8, 8), mat.wood));
+      finial.position.set(x, 14.15, z); castle.add(finial);
+    });
+
+    // Pole and cloth flag. Its vertices are displaced every frame.
+    const pole = shadow(new THREE.Mesh(new THREE.CylinderGeometry(.08, .1, 8, 10), mat.wood));
+    pole.position.set(0, 17.1, 0); castle.add(pole);
+    const flagGeo = new THREE.PlaneGeometry(5, 2.65, 20, 8);
+    flagGeo.translate(2.5, 0, 0);
+    const flag = new THREE.Mesh(flagGeo, mat.banner);
+    flag.position.set(.06, 19.35, 0); flag.rotation.y = -.12; flag.castShadow = true; castle.add(flag);
+    const flagBase = Float32Array.from(flagGeo.attributes.position.array);
+    // Gold horizontal accent on a separate waving strip.
+    const stripeGeo = new THREE.PlaneGeometry(5, .28, 20, 1); stripeGeo.translate(2.5, 0, 0);
+    const stripe = new THREE.Mesh(stripeGeo, mat.bannerGold);
+    stripe.position.copy(flag.position); stripe.position.z += .018; stripe.rotation.copy(flag.rotation); castle.add(stripe);
+    const stripeBase = Float32Array.from(stripeGeo.attributes.position.array);
+
+    // Procedural pine forest using instancing (large enough to fade into the fog).
+    const treeCount = 430;
+    const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(.18, .26, 2.8, 6), mat.wood, treeCount);
+    const needles = new THREE.InstancedMesh(new THREE.ConeGeometry(1.25, 4.4, 7),
+      new THREE.MeshStandardMaterial({ color: 0x244b37, roughness: 1 }), treeCount);
+    trunks.castShadow = trunks.receiveShadow = needles.castShadow = needles.receiveShadow = true;
+    const dummy = new THREE.Object3D();
+    // Deterministic noise keeps the composition stable on every load.
+    let seed = 9381;
+    const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+    let made = 0;
+    while (made < treeCount) {
+      const a = random() * Math.PI * 2;
+      const r = 22 + Math.pow(random(), .68) * 86;
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      // Leave the foreground road visible.
+      if (z > 7 && z < 42 && x > -2 && x < 20) continue;
+      const scale = .65 + random() * .72;
+      dummy.position.set(x, -1.25, z); dummy.scale.set(scale, scale, scale);
+      dummy.rotation.y = random() * Math.PI; dummy.updateMatrix(); trunks.setMatrixAt(made, dummy.matrix);
+      dummy.position.y = .95 * scale; dummy.rotation.y += .25; dummy.updateMatrix(); needles.setMatrixAt(made, dummy.matrix);
+      made++;
+    }
+    scene.add(trunks, needles);
+
+    // Scattered boulders around the hill.
+    const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), mat.stoneDark, 34);
+    rocks.castShadow = rocks.receiveShadow = true;
+    for (let i = 0; i < 34; i++) {
+      const a = random() * Math.PI * 2, r = 15 + random() * 18, s = .25 + random() * .75;
+      dummy.position.set(Math.cos(a)*r, -1.9 + random()*.3, Math.sin(a)*r);
+      dummy.rotation.set(random(), random(), random()); dummy.scale.set(s*1.35, s*.7, s);
+      dummy.updateMatrix(); rocks.setMatrixAt(i, dummy.matrix);
+    }
+    scene.add(rocks);
+
+    // Soft clouds drift above the horizon.
+    const cloudMat = new THREE.MeshStandardMaterial({ color: 0xe8eeee, transparent: true, opacity: .7, roughness: 1 });
+    const clouds = new THREE.Group();
+    for (let i = 0; i < 10; i++) {
+      const cloud = new THREE.Group();
+      const lobes = 3 + Math.floor(random()*3);
+      for (let j = 0; j < lobes; j++) {
+        const puff = new THREE.Mesh(new THREE.SphereGeometry(2.1 + random()*2, 12, 8), cloudMat);
+        puff.scale.y = .45; puff.position.set(j*2.7, random()*.5, random()); cloud.add(puff);
+      }
+      cloud.position.set(-75 + random()*145, 21 + random()*13, -50 + random()*85);
+      cloud.scale.setScalar(.75 + random()*.8); clouds.add(cloud);
+    }
+    scene.add(clouds);
+
+    function waveGeometry(geometry, base, time, strength = 1) {
+      const p = geometry.attributes.position;
+      for (let i = 0; i < p.count; i++) {
+        const x = base[i*3], y = base[i*3+1];
+        const tether = Math.min(1, x / 1.4);
+        p.setZ(i, base[i*3+2] + tether * strength * (.26*Math.sin(x*2.15-time*4.2) + .11*Math.sin(x*4.7-time*6.1) + .08*y*Math.cos(time*3+x)));
+      }
+      p.needsUpdate = true; geometry.computeVertexNormals();
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+      // Slow continuous orbit, with a subtle rise/fall like a cinematic crane.
+      const angle = t * .075 + .55;
+      const radius = Math.min(48, 39 + innerWidth / innerHeight * 3);
+      camera.position.set(Math.sin(angle) * radius, 18 + Math.sin(t*.19)*2.3, Math.cos(angle) * radius);
+      camera.lookAt(0, 6.2, 0);
+      waveGeometry(flagGeo, flagBase, t, 1);
+      waveGeometry(stripeGeo, stripeBase, t, 1.02);
+      clouds.position.x = Math.sin(t*.018) * 8;
+      renderer.render(scene, camera);
+    }
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    });
+
+    renderer.compile(scene, camera);
+    document.body.classList.add('loaded');
+    animate();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Castle on the Hill — WebGL Animation</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0a0d14; overflow:hidden; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #hud {
+    position:fixed; left:24px; bottom:22px; color:#f2ead8; pointer-events:none;
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    text-shadow: 0 2px 10px rgba(0,0,0,.65); opacity:0; animation: fade 3s ease 0.6s forwards;
+  }
+  #hud h1 { margin:0; font-size:26px; font-weight:600; letter-spacing:.06em; }
+  #hud p  { margin:4px 0 0; font-size:13px; letter-spacing:.14em; text-transform:uppercase; opacity:.7; }
+  #err {
+    position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    color:#e8dfcc; background:#10141d; font-family:system-ui,sans-serif; font-size:16px; text-align:center; padding:40px;
+  }
+  @keyframes fade { to { opacity:1; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><h1>Castle on the Hill</h1><p>A forest keep &middot; WebGL</p></div>
+<div id="err">This animation needs WebGL 2, which your browser does not seem to support.</div>
+<script>
+"use strict";
+(function () {
+
+/* ------------------------------------------------------------------ math */
+const V = {
+  sub: (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
+  cross: (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  norm: (a) => { const l = Math.hypot(a[0],a[1],a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; },
+};
+
+function m4mul(a, b) {                       // column-major, returns a*b
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    let s = 0;
+    for (let k = 0; k < 4; k++) s += a[k*4+r] * b[c*4+k];
+    o[c*4+r] = s;
+  }
+  return o;
+}
+function m4identity() {
+  return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+}
+function m4perspective(fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+  return new Float32Array([
+    f/aspect,0,0,0,
+    0,f,0,0,
+    0,0,(far+near)*nf,-1,
+    0,0,2*far*near*nf,0,
+  ]);
+}
+function m4ortho(l, r, b, t, n, f) {
+  return new Float32Array([
+    2/(r-l),0,0,0,
+    0,2/(t-b),0,0,
+    0,0,-2/(f-n),0,
+    -(r+l)/(r-l), -(t+b)/(t-b), -(f+n)/(f-n), 1,
+  ]);
+}
+function m4lookAt(eye, target, up) {
+  const z = V.norm(V.sub(eye, target));
+  const x = V.norm(V.cross(up, z));
+  const y = V.cross(z, x);
+  return new Float32Array([
+    x[0], y[0], z[0], 0,
+    x[1], y[1], z[1], 0,
+    x[2], y[2], z[2], 0,
+    -(x[0]*eye[0] + x[1]*eye[1] + x[2]*eye[2]),
+    -(y[0]*eye[0] + y[1]*eye[1] + y[2]*eye[2]),
+    -(z[0]*eye[0] + z[1]*eye[1] + z[2]*eye[2]), 1,
+  ]);
+}
+function m4invert(m) {
+  const o = new Float32Array(16);
+  const a00=m[0],a01=m[1],a02=m[2],a03=m[3], a10=m[4],a11=m[5],a12=m[6],a13=m[7],
+        a20=m[8],a21=m[9],a22=m[10],a23=m[11], a30=m[12],a31=m[13],a32=m[14],a33=m[15];
+  const b00=a00*a11-a01*a10, b01=a00*a12-a02*a10, b02=a00*a13-a03*a10,
+        b03=a01*a12-a02*a11, b04=a01*a13-a03*a11, b05=a02*a13-a03*a12,
+        b06=a20*a31-a21*a30, b07=a20*a32-a22*a30, b08=a20*a33-a23*a30,
+        b09=a21*a32-a22*a31, b10=a21*a33-a23*a31, b11=a22*a33-a23*a32;
+  let det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06;
+  if (!det) return m4identity();
+  det = 1 / det;
+  o[0]=(a11*b11-a12*b10+a13*b09)*det;  o[1]=(a02*b10-a01*b11-a03*b09)*det;
+  o[2]=(a31*b05-a32*b04+a33*b03)*det;  o[3]=(a22*b04-a21*b05-a23*b03)*det;
+  o[4]=(a12*b08-a10*b11-a13*b07)*det;  o[5]=(a00*b11-a02*b08+a03*b07)*det;
+  o[6]=(a32*b02-a30*b05-a33*b01)*det;  o[7]=(a20*b05-a22*b02+a23*b01)*det;
+  o[8]=(a10*b10-a11*b08+a13*b06)*det;  o[9]=(a01*b08-a00*b10-a03*b06)*det;
+  o[10]=(a30*b04-a31*b02+a33*b00)*det; o[11]=(a21*b02-a20*b04-a23*b00)*det;
+  o[12]=(a11*b07-a10*b09-a12*b06)*det; o[13]=(a00*b09-a01*b07+a02*b06)*det;
+  o[14]=(a31*b01-a30*b03-a32*b00)*det; o[15]=(a20*b03-a21*b01+a22*b00)*det;
+  return o;
+}
+
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+const mix = (a, b, t) => a + (b - a) * t;
+function smoothstep(e0, e1, x) { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t*t*(3 - 2*t); }
+
+/* deterministic rng + value noise */
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hash2(x, y) {
+  let h = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+  return h - Math.floor(h);
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf*xf*(3-2*xf), v = yf*yf*(3-2*yf);
+  const a = hash2(xi, yi),     b = hash2(xi+1, yi);
+  const c = hash2(xi, yi+1),   d = hash2(xi+1, yi+1);
+  return mix(mix(a, b, u), mix(c, d, u), v) * 2 - 1;
+}
+function fbm(x, y, oct) {
+  let s = 0, a = 0.5, f = 1;
+  for (let i = 0; i < oct; i++) { s += a * vnoise(x*f, y*f); f *= 2.03; a *= 0.5; }
+  return s;
+}
+
+/* ------------------------------------------------------- world / terrain */
+const HILL_H    = 34;      // plateau height
+const PLATEAU_R = 30;      // flat radius on top
+const WORLD     = 760;     // terrain extent (square, centred on castle)
+const TSEG      = 300;     // terrain resolution
+
+function rolling(x, z) {              // gentle forest floor relief
+  return fbm(x * 0.0045, z * 0.0045, 4) * 13 + fbm(x * 0.017, z * 0.017, 3) * 2.6;
+}
+function terrainHeight(x, z) {
+  const r = Math.hypot(x, z);
+  const hillT = 1 - smoothstep(36, 118, r);            // hill profile
+  const flat  = 1 - smoothstep(PLATEAU_R, 46, r);      // flat plateau mask
+  const ridge = (fbm(x * 0.03, z * 0.03, 3) * 2.2) * (1 - flat) * hillT;
+  const detail = fbm(x * 0.075, z * 0.075, 2) * 0.9 * (1 - flat);
+  return HILL_H * hillT + rolling(x, z) * (1 - flat) + ridge + detail;
+}
+function terrainNormal(x, z) {
+  const e = 0.8;
+  const hx = terrainHeight(x + e, z) - terrainHeight(x - e, z);
+  const hz = terrainHeight(x, z + e) - terrainHeight(x, z - e);
+  return V.norm([-hx, 2 * e, -hz]);
+}
+// winding track that climbs the hill to the gate (gate faces +z)
+function pathDist(x, z) {
+  if (z < 12) return 1e9;
+  const cx = 9 * Math.sin(z * 0.021) + 3.5 * Math.sin(z * 0.006);
+  return Math.abs(x - cx);
+}
+
+/* --------------------------------------------------- geometry accumulator */
+class Geo {
+  constructor() { this.p = []; this.n = []; this.c = []; this.uv = []; this.m = []; this.i = []; }
+  get count() { return this.p.length / 3; }
+  vert(px, py, pz, nx, ny, nz, col, u, v, mat) {
+    this.p.push(px, py, pz); this.n.push(nx, ny, nz);
+    this.c.push(col[0], col[1], col[2]); this.uv.push(u, v); this.m.push(mat);
+  }
+  // a,b,c,d counter-clockwise seen from the front; uvs optional [[u,v]x4]
+  quad(a, b, c, d, col, mat, uvs) {
+    const n = V.norm(V.cross(V.sub(b, a), V.sub(d, a)));
+    const base = this.count;
+    const pts = [a, b, c, d];
+    for (let k = 0; k < 4; k++) {
+      const p = pts[k];
+      let u, v;
+      if (uvs) { u = uvs[k][0]; v = uvs[k][1]; }
+      else if (Math.abs(n[1]) > 0.7) { u = p[0]; v = p[2]; }
+      else { u = p[0] * n[2] - p[2] * n[0]; v = p[1]; }
+      this.vert(p[0], p[1], p[2], n[0], n[1], n[2], col, u, v, mat);
+    }
+    this.i.push(base, base+1, base+2, base, base+2, base+3);
+  }
+  tri(a, b, c, col, mat, uvs, nrm) {
+    const n = nrm || V.norm(V.cross(V.sub(b, a), V.sub(c, a)));
+    const base = this.count;
+    const pts = [a, b, c];
+    for (let k = 0; k < 3; k++) {
+      const p = pts[k];
+      let u, v;
+      if (uvs) { u = uvs[k][0]; v = uvs[k][1]; }
+      else if (Math.abs(n[1]) > 0.7) { u = p[0]; v = p[2]; }
+      else { u = p[0] * n[2] - p[2] * n[0]; v = p[1]; }
+      this.vert(p[0], p[1], p[2], n[0], n[1], n[2], col, u, v, mat);
+    }
+    this.i.push(base, base+1, base+2);
+  }
+  // axis aligned box, optionally rotated about Y around its own centre
+  box(cx, cy, cz, sx, sy, sz, col, mat, rotY) {
+    const hx = sx/2, hy = sy/2, hz = sz/2;
+    const ca = Math.cos(rotY || 0), sa = Math.sin(rotY || 0);
+    const P = (x, y, z) => [cx + x*ca + z*sa, cy + y, cz - x*sa + z*ca];
+    const v000 = P(-hx,-hy,-hz), v100 = P(hx,-hy,-hz), v110 = P(hx,hy,-hz), v010 = P(-hx,hy,-hz);
+    const v001 = P(-hx,-hy,hz),  v101 = P(hx,-hy,hz),  v111 = P(hx,hy,hz),  v011 = P(-hx,hy,hz);
+    const fu = (w, h) => [[0,0],[w,0],[w,h],[0,h]];
+    this.quad(v001, v101, v111, v011, col, mat, fuOff(fu(sx,sy), cx, cy - hy));   // +z
+    this.quad(v100, v000, v010, v110, col, mat, fuOff(fu(sx,sy), cx, cy - hy));   // -z
+    this.quad(v101, v100, v110, v111, col, mat, fuOff(fu(sz,sy), cz, cy - hy));   // +x
+    this.quad(v000, v001, v011, v010, col, mat, fuOff(fu(sz,sy), cz, cy - hy));   // -x
+    this.quad(v011, v111, v110, v010, col, mat, fuOff(fu(sx,sz), cx, cz - hz));   // +y
+    this.quad(v000, v100, v101, v001, col, mat, fuOff(fu(sx,sz), cx, cz - hz));   // -y
+  }
+  // vertical (co-axial) cylinder / cone, centred on (cx, cz)
+  cyl(cx, cz, y0, y1, r0, r1, seg, col, mat, capTop, capBot, uvScale) {
+    const dy = y1 - y0, dr = r1 - r0;
+    const slant = Math.hypot(dy, dr) || 1;
+    const us = uvScale === undefined ? 1 : uvScale;
+    for (let s = 0; s < seg; s++) {
+      const a0 = s / seg * Math.PI * 2, a1 = (s + 1) / seg * Math.PI * 2;
+      const am = (a0 + a1) / 2;
+      const c0 = Math.cos(a0), s0 = Math.sin(a0), c1 = Math.cos(a1), s1 = Math.sin(a1);
+      const nA = V.norm([c0 * dy, -dr, s0 * dy]);
+      const nB = V.norm([c1 * dy, -dr, s1 * dy]);
+      const u0 = a0 * (r0 + r1) * 0.5 * us, u1 = a1 * (r0 + r1) * 0.5 * us;
+      const pA0 = [cx + c0*r0, y0, cz + s0*r0], pB0 = [cx + c1*r0, y0, cz + s1*r0];
+      const pA1 = [cx + c0*r1, y1, cz + s0*r1], pB1 = [cx + c1*r1, y1, cz + s1*r1];
+      const base = this.count;
+      if (r1 < 1e-4) {
+        this.vert(pA0[0],pA0[1],pA0[2], nA[0],nA[1],nA[2], col, u0, 0, mat);
+        this.vert(pB0[0],pB0[1],pB0[2], nB[0],nB[1],nB[2], col, u1, 0, mat);
+        const nm = V.norm([Math.cos(am)*dy, -dr, Math.sin(am)*dy]);
+        this.vert(pA1[0],pA1[1],pA1[2], nm[0],nm[1],nm[2], col, (u0+u1)/2, slant, mat);
+        this.i.push(base, base+1, base+2);
+      } else {
+        this.vert(pA0[0],pA0[1],pA0[2], nA[0],nA[1],nA[2], col, u0, 0, mat);
+        this.vert(pB0[0],pB0[1],pB0[2], nB[0],nB[1],nB[2], col, u1, 0, mat);
+        this.vert(pB1[0],pB1[1],pB1[2], nB[0],nB[1],nB[2], col, u1, slant, mat);
+        this.vert(pA1[0],pA1[1],pA1[2], nA[0],nA[1],nA[2], col, u0, slant, mat);
+        this.i.push(base, base+1, base+2, base, base+2, base+3);
+      }
+      if (capTop && r1 > 1e-4) this.tri([cx, y1, cz], pA1, pB1, col, mat, [[cx,cz],[pA1[0],pA1[2]],[pB1[0],pB1[2]]], [0,1,0]);
+      if (capBot && r0 > 1e-4) this.tri([cx, y0, cz], pB0, pA0, col, mat, [[cx,cz],[pB0[0],pB0[2]],[pA0[0],pA0[2]]], [0,-1,0]);
+    }
+  }
+  // ring of merlons on top of a round tower
+  battlementRing(cx, cz, y, r, count, col, mat) {
+    for (let k = 0; k < count; k++) {
+      const a = k / count * Math.PI * 2;
+      this.box(cx + Math.cos(a) * (r - 0.45), y + 0.85, cz + Math.sin(a) * (r - 0.45),
+               1.5, 1.7, 0.95, col, mat, -a);
+    }
+  }
+  merge(other) {
+    const off = this.count;
+    for (const k of ['p','n','c','uv','m']) Array.prototype.push.apply(this[k], other[k]);
+    for (let j = 0; j < other.i.length; j++) this.i.push(other.i[j] + off);
+  }
+  buffers() {
+    return {
+      p: new Float32Array(this.p), n: new Float32Array(this.n), c: new Float32Array(this.c),
+      uv: new Float32Array(this.uv), m: new Float32Array(this.m),
+      i: (this.count > 65535) ? new Uint32Array(this.i) : new Uint16Array(this.i),
+    };
+  }
+}
+function fuOff(uvs, ou, ov) { return uvs.map(q => [q[0] + ou, q[1] + ov]); }
+
+/* --------------------------------------------------------- scene content */
+const MAT = { PLAIN: 0, STONE: 1, ROOF: 2, GROUND: 3, WOOD: 4, LEAF: 5 };
+const COL = {
+  stone:     [0.66, 0.63, 0.57],
+  stoneDark: [0.55, 0.52, 0.47],
+  stoneWarm: [0.70, 0.65, 0.55],
+  rock:      [0.44, 0.42, 0.40],
+  slate:     [0.29, 0.32, 0.41],
+  tile:      [0.45, 0.24, 0.18],
+  wood:      [0.26, 0.17, 0.11],
+  dark:      [0.05, 0.05, 0.06],
+  bark:      [0.27, 0.20, 0.15],
+};
+const jitter = (c, r, k) => [
+  clamp(c[0] + (r() - 0.5) * k, 0, 1), clamp(c[1] + (r() - 0.5) * k, 0, 1), clamp(c[2] + (r() - 0.5) * k, 0, 1)];
+
+function sphereBlob(g, cx, cy, cz, r, su, sv, col, mat, rng, squash) {
+  const sq = squash === undefined ? 1 : squash;
+  const P = (iu, iv) => {
+    const a = iu / su * Math.PI * 2, b = iv / sv * Math.PI;
+    const wob = 1 + (hash2(iu * 3.1 + cx, iv * 5.7 + cz) - 0.5) * 0.22;
+    return [cx + Math.sin(b) * Math.cos(a) * r * wob,
+            cy + Math.cos(b) * r * sq * wob,
+            cz + Math.sin(b) * Math.sin(a) * r * wob];
+  };
+  for (let iv = 0; iv < sv; iv++) for (let iu = 0; iu < su; iu++) {
+    const a = P(iu, iv), b = P(iu, iv + 1), c = P(iu + 1, iv + 1), d = P(iu + 1, iv);
+    const cc = jitter(col, rng, 0.07);
+    if (iv === 0) g.tri(a, b, c, cc, mat);
+    else if (iv === sv - 1) g.tri(a, b, d, cc, mat);
+    else g.quad(a, b, c, d, cc, mat);
+  }
+}
+
+/* ----- the castle ----- */
+function buildCastle() {
+  const g = new Geo();
+  const rng = mulberry32(7);
+  const B = HILL_H;                       // ground level on the plateau
+  const S = COL.stone, SD = COL.stoneDark;
+
+  // rocky crag the castle stands on
+  g.cyl(0, 0, B - 16, B + 0.35, 34.5, 29.5, 44, [0.50, 0.48, 0.44], MAT.STONE, true, false, 0.6);
+  for (let k = 0; k < 32; k++) {          // boulders resting on the slope
+    const a = rng() * Math.PI * 2, rr = 31 + rng() * 30;
+    const x = Math.cos(a) * rr, z = Math.sin(a) * rr;
+    const rad = 1.1 + rng() * 2.6;
+    sphereBlob(g, x, terrainHeight(x, z) - rad * 0.45, z, rad, 7, 4,
+               jitter([0.34, 0.34, 0.32], rng, 0.05), MAT.PLAIN, rng, 0.75);
+  }
+
+  // courtyard floor
+  g.box(0, B + 0.25, 0, 36, 0.6, 36, [0.50, 0.48, 0.45], MAT.STONE, 0);
+
+  const WH = 10, WT = 2.6, WR = 17;       // wall height / thickness / ring radius
+  const wallTop = B + WH;
+
+  function merlons(x0, z0, x1, z1, y, t) {
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    const n = Math.max(2, Math.round(len / 2.9));
+    const ang = Math.atan2(-(z1 - z0), x1 - x0);
+    for (let k = 0; k <= n; k++) {
+      const f = k / n;
+      g.box(mix(x0, x1, f), y + 0.9, mix(z0, z1, f), 1.5, 1.8, t, jitter(SD, rng, 0.06), MAT.STONE, ang);
+    }
+  }
+  function arrowSlit(x, y, z, ang, h) {
+    g.box(x, y, z, 0.5, h || 2.4, 0.5, COL.dark, MAT.PLAIN, ang);
+  }
+
+  // curtain walls (front wall is split for the gate)
+  g.box(0, B + WH/2, -WR, 2*WR + WT, WH, WT, S, MAT.STONE, 0);
+  g.box(-WR, B + WH/2, 0, WT, WH, 2*WR + WT, S, MAT.STONE, 0);
+  g.box( WR, B + WH/2, 0, WT, WH, 2*WR + WT, S, MAT.STONE, 0);
+  const gateHalf = 4.6, frontSeg = (WR + WT/2 - gateHalf);
+  g.box(-(gateHalf + frontSeg/2), B + WH/2, WR, frontSeg, WH, WT, S, MAT.STONE, 0);
+  g.box( (gateHalf + frontSeg/2), B + WH/2, WR, frontSeg, WH, WT, S, MAT.STONE, 0);
+  g.box(0, B + 8.6, WR, 2*gateHalf, 2.8, WT, S, MAT.STONE, 0);      // lintel over the gate
+  g.box(0, B + 3.6, WR, 2*gateHalf - 0.9, 7.2, 0.7, COL.wood, MAT.WOOD, 0);  // oak gate
+  for (let k = 0; k < 5; k++) g.box(0, B + 0.8 + k * 1.6, WR - 0.42, 2*gateHalf - 0.9, 0.22, 0.3, [0.16,0.12,0.09], MAT.PLAIN, 0);
+
+  merlons(-WR, -WR, WR, -WR, wallTop, WT);
+  merlons(-WR - 0.3, -WR, -WR - 0.3, WR, wallTop, WT);
+  merlons( WR + 0.3, -WR,  WR + 0.3, WR, wallTop, WT);
+  merlons(-WR, WR, -gateHalf, WR, wallTop, WT);
+  merlons(gateHalf, WR, WR, WR, wallTop, WT);
+  for (let k = -1; k <= 1; k++) {
+    arrowSlit(k * 8, B + 6, -WR - 1.32, 0);
+    arrowSlit(-WR - 1.32, B + 6, k * 8, Math.PI/2);
+    arrowSlit( WR + 1.32, B + 6, k * 8, Math.PI/2);
+  }
+
+  // corner towers
+  const corners = [[-WR, -WR], [WR, -WR], [-WR, WR], [WR, WR]];
+  const towerTops = [];
+  for (const [cx, cz] of corners) {
+    g.cyl(cx, cz, B - 1, B + 15.5, 5.3, 4.7, 22, S, MAT.STONE, false, false);
+    g.cyl(cx, cz, B + 15.5, B + 17.0, 4.7, 5.5, 22, SD, MAT.STONE, false, false);   // machicolation
+    g.battlementRing(cx, cz, B + 17.0, 5.5, 13, SD, MAT.STONE);
+    g.cyl(cx, cz, B + 18.6, B + 27.5, 5.7, 0, 22, COL.slate, MAT.ROOF, false, false);
+    for (let k = 0; k < 3; k++) {
+      const a = k * 2.1 + 0.6;
+      arrowSlit(cx + Math.cos(a) * 4.95, B + 7 + k * 3, cz + Math.sin(a) * 4.95, -a);
+    }
+    towerTops.push([cx, B + 27.5, cz]);
+  }
+
+  // gatehouse towers flanking the entrance
+  for (const sx of [-1, 1]) {
+    const cx = sx * (gateHalf + 3.3), cz = WR + 1.4;
+    g.cyl(cx, cz, B - 1, B + 13.5, 4.1, 3.7, 20, COL.stoneWarm, MAT.STONE, false, false);
+    g.cyl(cx, cz, B + 13.5, B + 14.8, 3.7, 4.4, 20, SD, MAT.STONE, false, false);
+    g.battlementRing(cx, cz, B + 14.8, 4.4, 11, SD, MAT.STONE);
+    g.cyl(cx, cz, B + 16.2, B + 23.4, 4.6, 0, 20, COL.slate, MAT.ROOF, false, false);
+    arrowSlit(cx + sx * 3.9, B + 8, cz, sx > 0 ? Math.PI/2 : -Math.PI/2);
+  }
+
+  // the keep — tallest tower, carries the great flag
+  const KX = 0, KZ = -3.5, KR = 7.4, KTOP = B + 27;
+  g.cyl(KX, KZ, B - 1, KTOP, KR + 0.6, KR, 28, COL.stoneWarm, MAT.STONE, false, false);
+  g.cyl(KX, KZ, B + 12.2, B + 13.0, KR + 0.5, KR + 0.5, 28, SD, MAT.STONE, false, false);  // string course
+  g.cyl(KX, KZ, KTOP, KTOP + 1.6, KR, KR + 1.0, 28, SD, MAT.STONE, false, false);          // machicolation
+  g.battlementRing(KX, KZ, KTOP + 1.6, KR + 1.0, 18, SD, MAT.STONE);
+  const roofBase = KTOP + 3.2;
+  g.cyl(KX, KZ, roofBase, roofBase + 13.5, KR + 1.2, 0, 28, COL.slate, MAT.ROOF, false, false);
+  for (let k = 0; k < 10; k++) {           // windows up the keep
+    const a = k * 1.9, y = B + 5 + (k % 5) * 4.2;
+    arrowSlit(KX + Math.cos(a) * (KR + 0.2), y, KZ + Math.sin(a) * (KR + 0.2), -a, 3.0);
+  }
+  // stair turret hugging the keep
+  g.cyl(KX + 6.4, KZ + 4.4, B - 1, KTOP + 4.5, 2.5, 2.3, 16, S, MAT.STONE, false, false);
+  g.cyl(KX + 6.4, KZ + 4.4, KTOP + 4.5, KTOP + 9.5, 2.9, 0, 16, COL.slate, MAT.ROOF, false, false);
+  // flag pole on the keep's summit
+  const POLE_BASE = roofBase + 13.5;
+  g.cyl(KX, KZ, POLE_BASE - 1.2, POLE_BASE + 13.5, 0.22, 0.16, 8, COL.wood, MAT.WOOD, false, false);
+  g.cyl(KX, KZ, POLE_BASE + 13.5, POLE_BASE + 14.5, 0.45, 0, 8, [0.62, 0.50, 0.20], MAT.PLAIN, false, false);
+
+  // great hall inside the courtyard
+  function gable(cx, cy, cz, sx, sz, wallH, roofH, wallCol, roofCol) {
+    g.box(cx, cy + wallH/2, cz, sx, wallH, sz, wallCol, MAT.STONE, 0);
+    const y0 = cy + wallH, y1 = cy + wallH + roofH;
+    const hx = sx/2 + 0.5, hz = sz/2 + 0.5;
+    const A = [cx-hx, y0, cz-hz], Bp = [cx+hx, y0, cz-hz], C = [cx+hx, y0, cz+hz], D = [cx-hx, y0, cz+hz];
+    const R0 = [cx-hx, y1, cz], R1 = [cx+hx, y1, cz];
+    g.quad(D, C, R1, R0, roofCol, MAT.ROOF, [[0,0],[sx,0],[sx,roofH*1.4],[0,roofH*1.4]]);
+    g.quad(Bp, A, R0, R1, roofCol, MAT.ROOF, [[0,0],[sx,0],[sx,roofH*1.4],[0,roofH*1.4]]);
+    g.tri(A, Bp, R1, wallCol, MAT.STONE); g.tri(A, R1, R0, wallCol, MAT.STONE);
+    g.tri(C, D, R0, wallCol, MAT.STONE);  g.tri(C, R0, R1, wallCol, MAT.STONE);
+  }
+  gable(-10.5, B + 0.5, 7.5, 13, 9, 7, 5, S, COL.tile);
+  gable(10.5, B + 0.5, -9.5, 9, 7.5, 5.5, 4, COL.stoneWarm, COL.tile);
+  g.cyl(-13.5, 7.5, B + 12.5, B + 15.5, 0.45, 0.45, 8, [0.3,0.28,0.26], MAT.PLAIN, true, false); // chimney
+  for (let k = 0; k < 6; k++) {           // barrels & crates in the yard
+    const a = rng() * Math.PI * 2, rr = 7 + rng() * 6;
+    const x = Math.cos(a) * rr, z = Math.sin(a) * rr + 6;
+    if (Math.hypot(x, z + 3.5) < 9) continue;
+    if (rng() < 0.5) g.cyl(x, z, B + 0.5, B + 2.1, 0.75, 0.68, 10, COL.wood, MAT.WOOD, true, false);
+    else g.box(x, B + 1.1, z, 1.6, 1.4, 1.6, [0.34,0.24,0.16], MAT.WOOD, rng() * 3);
+  }
+  return { geo: g, poleBase: POLE_BASE, towerTops: towerTops, keep: [KX, KZ] };
+}
+
+/* ----- trees ----- */
+function buildConifer() {
+  const g = new Geo(), rng = mulberry32(21);
+  g.cyl(0, 0, 0, 3.0, 0.42, 0.28, 6, COL.bark, MAT.PLAIN, false, false);
+  const green = [0.16, 0.34, 0.18];
+  for (let k = 0; k < 4; k++) {
+    const y = 1.5 + k * 1.85, r = 2.5 - k * 0.48, h = 3.4 - k * 0.25;
+    g.cyl(0, 0, y, y + h, r, 0, 9, jitter(green, rng, 0.06), MAT.LEAF, false, true);
+  }
+  return g;
+}
+function buildBroadleaf() {
+  const g = new Geo(), rng = mulberry32(33);
+  g.cyl(0, 0, 0, 3.4, 0.5, 0.34, 6, COL.bark, MAT.PLAIN, false, false);
+  const green = [0.26, 0.40, 0.17];
+  sphereBlob(g, 0, 5.4, 0, 2.9, 8, 5, green, MAT.LEAF, rng, 0.85);
+  sphereBlob(g, 1.7, 4.3, 0.8, 1.9, 7, 4, jitter(green, rng, 0.08), MAT.LEAF, rng, 0.9);
+  sphereBlob(g, -1.5, 4.6, -1.1, 2.0, 7, 4, jitter(green, rng, 0.08), MAT.LEAF, rng, 0.9);
+  return g;
+}
+function scatterForest() {
+  const rng = mulberry32(1337);
+  const pine = { a: [], b: [] }, oak = { a: [], b: [] };
+  let tries = 0;
+  while (tries < 42000 && pine.a.length / 4 + oak.a.length / 4 < 2300) {
+    tries++;
+    const x = (rng() * 2 - 1) * 355, z = (rng() * 2 - 1) * 355;
+    const r = Math.hypot(x, z);
+    if (r < 46 || r > 358) continue;
+    const h = terrainHeight(x, z);
+    if (h > 25) continue;                                   // forest stops below the castle
+    const n = terrainNormal(x, z);
+    if (n[1] < 0.80) continue;                              // no trees on cliffs
+    if (pathDist(x, z) < 6.5) continue;                     // keep the track clear
+    const dens = fbm(x * 0.0055, z * 0.0055, 3);
+    if (dens < -0.18 && rng() < 0.85) continue;             // clearings
+    if (r < 90 && rng() < 0.35) continue;                   // thin out near the hill
+    const pineish = fbm(x * 0.004 + 40, z * 0.004 - 12, 2) * 1.4 + (h - 4) * 0.02 + 0.18;
+    const t = pineish > 0 ? pine : oak;
+    const scale = (t === pine ? 0.85 : 0.75) + rng() * (t === pine ? 0.85 : 0.6);
+    t.a.push(x, h - 0.3, z, scale);
+    const rot = rng() * Math.PI * 2;
+    t.b.push(Math.sin(rot), Math.cos(rot), 0.78 + rng() * 0.46, rng() * 6.28);
+  }
+  // undergrowth: small bushes
+  for (let k = 0; k < 900; k++) {
+    const x = (rng() * 2 - 1) * 300, z = (rng() * 2 - 1) * 300;
+    const r = Math.hypot(x, z);
+    if (r < 40 || r > 305) continue;
+    const h = terrainHeight(x, z);
+    if (h > 30 || terrainNormal(x, z)[1] < 0.72) continue;
+    if (pathDist(x, z) < 4.0) continue;
+    const s = 0.16 + rng() * 0.2;
+    oak.a.push(x, h - 0.6, z, s);
+    const rot = rng() * Math.PI * 2;
+    oak.b.push(Math.sin(rot), Math.cos(rot), 0.7 + rng() * 0.5, rng() * 6.28);
+  }
+  return { pine, oak };
+}
+
+/* ----- terrain mesh ----- */
+function buildTerrain() {
+  const N = TSEG, step = WORLD / N, half = WORLD / 2;
+  const nv = (N + 1) * (N + 1);
+  const p = new Float32Array(nv * 3), nrm = new Float32Array(nv * 3),
+        col = new Float32Array(nv * 3), uv = new Float32Array(nv * 2), mt = new Float32Array(nv);
+  const grassLow  = [0.17, 0.27, 0.13];
+  const grassHigh = [0.30, 0.37, 0.19];
+  const dry       = [0.44, 0.41, 0.21];
+  const dirt      = [0.36, 0.28, 0.19];
+  const rockc     = [0.33, 0.29, 0.25];
+  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+    const idx = j * (N + 1) + i;
+    const x = -half + i * step, z = -half + j * step;
+    const h = terrainHeight(x, z), n = terrainNormal(x, z);
+    p[idx*3] = x; p[idx*3+1] = h; p[idx*3+2] = z;
+    nrm[idx*3] = n[0]; nrm[idx*3+1] = n[1]; nrm[idx*3+2] = n[2];
+    const tint = fbm(x * 0.02, z * 0.02, 3) * 0.5 + 0.5;
+    let c = [mix(grassLow[0], grassHigh[0], tint), mix(grassLow[1], grassHigh[1], tint), mix(grassLow[2], grassHigh[2], tint)];
+    const dryF = smoothstep(19, 33, h) * 0.6;               // hilltop turns to dry grass
+    c = [mix(c[0], dry[0], dryF), mix(c[1], dry[1], dryF), mix(c[2], dry[2], dryF)];
+    const rockF = smoothstep(0.80, 0.58, n[1]);             // steep faces are bare rock
+    c = [mix(c[0], rockc[0], rockF), mix(c[1], rockc[1], rockF), mix(c[2], rockc[2], rockF)];
+    const pd = pathDist(x, z);
+    const pathF = (1 - smoothstep(2.4, 5.2, pd)) * smoothstep(12, 22, z) * (1 - smoothstep(30, 46, Math.hypot(x, z) - 0));
+    const pathF2 = (1 - smoothstep(2.4, 5.2, pd)) * smoothstep(12, 20, z);
+    const pf = Math.max(pathF, pathF2 * 0.9);
+    c = [mix(c[0], dirt[0], pf), mix(c[1], dirt[1], pf), mix(c[2], dirt[2], pf)];
+    col[idx*3] = c[0]; col[idx*3+1] = c[1]; col[idx*3+2] = c[2];
+    uv[idx*2] = x; uv[idx*2+1] = z;
+    mt[idx] = MAT.GROUND;
+  }
+  const ind = new Uint32Array(N * N * 6);
+  let o = 0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * (N + 1) + i, b = a + (N + 1), c = b + 1, d = a + 1;
+    ind[o++] = a; ind[o++] = b; ind[o++] = c;
+    ind[o++] = a; ind[o++] = c; ind[o++] = d;
+  }
+  return { p, n: nrm, c: col, uv, m: mt, i: ind };
+}
+
+/* ----- flag mesh (positions are generated in the vertex shader) ----- */
+function buildFlagMesh(nu, nv) {
+  const uv = new Float32Array((nu + 1) * (nv + 1) * 2);
+  let o = 0;
+  for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) { uv[o++] = i / nu; uv[o++] = j / nv; }
+  const ind = new Uint16Array(nu * nv * 6);
+  let k = 0;
+  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+    const a = j * (nu + 1) + i, b = a + 1, c = a + nu + 2, d = a + nu + 1;
+    ind[k++] = a; ind[k++] = b; ind[k++] = c;
+    ind[k++] = a; ind[k++] = c; ind[k++] = d;
+  }
+  return { uv, i: ind };
+}
+
+/* -------------------------------------------------------------- shaders */
+const GLSL_COMMON = `
+float hash21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+34.56); return fract(p.x*p.y); }
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*(3.0-2.0*f);
+  float a = hash21(i), b = hash21(i+vec2(1,0)), c = hash21(i+vec2(0,1)), d = hash21(i+vec2(1,1));
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+float fbm2(vec2 p){
+  float s = 0.0, a = 0.5;
+  for (int i = 0; i < 5; i++){ s += a*vnoise(p); p *= 2.07; a *= 0.5; }
+  return s;
+}
+vec3 skyColor(vec3 dir, vec3 sunDir){
+  float up = clamp(dir.y, -1.0, 1.0);
+  vec3 zenith  = vec3(0.07, 0.25, 0.62);
+  vec3 horizon = vec3(0.56, 0.70, 0.84);
+  vec3 col = mix(horizon, zenith, pow(clamp(up, 0.0, 1.0), 0.62));
+  col = mix(vec3(0.46, 0.50, 0.52), col, smoothstep(-0.28, 0.03, up));
+  float sd = max(dot(normalize(dir), sunDir), 0.0);
+  col += vec3(1.0, 0.72, 0.42) * pow(sd, 6.0) * 0.30;
+  col += vec3(1.0, 0.90, 0.72) * pow(sd, 42.0) * 0.35;
+  return col;
+}
+vec3 aces(vec3 x){
+  return clamp((x*(2.51*x + 0.03)) / (x*(2.43*x + 0.59) + 0.14), 0.0, 1.0);
+}
+`;
+
+const SKY_VS = `#version 300 es
+precision highp float;
+out vec2 vNdc;
+void main(){
+  vec2 v = vec2(float((gl_VertexID & 1) << 2) - 1.0, float((gl_VertexID & 2) << 1) - 1.0);
+  vNdc = v;
+  gl_Position = vec4(v, 1.0, 1.0);
+}`;
+
+const SKY_FS = `#version 300 es
+precision highp float;
+in vec2 vNdc;
+uniform mat4 uInvVP;
+uniform vec3 uCam, uSun;
+uniform float uTime;
+out vec4 frag;
+` + GLSL_COMMON + `
+void main(){
+  vec4 p = uInvVP * vec4(vNdc, 1.0, 1.0);
+  vec3 dir = normalize(p.xyz / p.w - uCam);
+  vec3 col = skyColor(dir, uSun);
+
+  // drifting cloud deck
+  if (dir.y > 0.008) {
+    vec2 cp = dir.xz / max(dir.y, 0.015) * 900.0 + vec2(uTime * 7.0, uTime * 2.6);
+    float d = fbm2(cp * 0.0011);
+    float d2 = fbm2(cp * 0.0036 + 11.0);
+    float cover = smoothstep(0.40, 0.70, d * 0.78 + d2 * 0.32);
+    float fade = smoothstep(0.03, 0.30, dir.y);
+    float lit = smoothstep(0.42, 0.85, d);
+    vec3 cloudCol = mix(vec3(0.62, 0.66, 0.74), vec3(1.05, 1.00, 0.95), lit);
+    cloudCol += vec3(0.35, 0.26, 0.16) * pow(max(dot(dir, uSun), 0.0), 8.0);
+    col = mix(col, cloudCol, cover * fade * 0.92);
+  }
+
+  // far mountain range sitting on the horizon
+  float az = atan(dir.z, dir.x);
+  float ridge = fbm2(vec2(az * 2.6 + 7.0, 3.0)) * 0.072
+              + fbm2(vec2(az * 6.3 + 2.0, 9.0)) * 0.030
+              + fbm2(vec2(az * 15.0, 4.0)) * 0.010;
+  float top = 0.004 + ridge;
+  float m = smoothstep(top + 0.004, top - 0.004, dir.y);
+  float depthShade = clamp((top - dir.y) * 9.0, 0.0, 1.0);
+  vec3 mountain = mix(vec3(0.44, 0.52, 0.64), vec3(0.28, 0.36, 0.52), depthShade);
+  mountain = mix(mountain, vec3(0.58, 0.68, 0.80), 0.42);
+  col = mix(col, mountain, m * 0.92 * smoothstep(-0.05, 0.01, dir.y));
+
+  frag = vec4(pow(aces(col * 1.0), vec3(1.0/2.2)), 1.0);
+}`;
+
+/* transform shared by the colour pass and the shadow pass */
+const XFORM = `
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec3 aCol;
+layout(location=3) in vec2 aUV;
+layout(location=4) in float aMat;
+layout(location=5) in vec4 aI0;   // xyz = instance offset, w = scale
+layout(location=6) in vec4 aI1;   // x = sin(rot), y = cos(rot), z = tint, w = phase
+uniform mat4 uModel;
+uniform float uTime, uSway;
+
+void placeVertex(out vec3 worldPos, out vec3 worldNrm){
+  vec3 lp = aPos;
+  float sw = (sin(uTime * 1.35 + aI1.w) * 0.020 + sin(uTime * 2.6 + aI1.w * 1.7) * 0.009) * uSway;
+  float lift = max(lp.y - 1.0, 0.0);
+  lp.x += sw * lift;
+  lp.z += sw * 0.55 * lift;
+  float sr = aI1.x, cr = aI1.y;
+  vec3 rp = vec3(lp.x * cr + lp.z * sr, lp.y, -lp.x * sr + lp.z * cr);
+  vec3 rn = vec3(aNrm.x * cr + aNrm.z * sr, aNrm.y, -aNrm.x * sr + aNrm.z * cr);
+  worldPos = (uModel * vec4(rp * aI0.w + aI0.xyz, 1.0)).xyz;
+  worldNrm = normalize(mat3(uModel) * rn);
+}`;
+
+const SCENE_VS = `#version 300 es
+precision highp float;
+` + XFORM + `
+uniform mat4 uVP, uLightVP;
+out vec3 vPos, vNrm, vCol;
+out vec2 vUV;
+out float vMat;
+out vec4 vLightPos;
+void main(){
+  vec3 wp, wn;
+  placeVertex(wp, wn);
+  vPos = wp; vNrm = wn;
+  vCol = aCol * aI1.z;
+  vUV = aUV; vMat = aMat;
+  vLightPos = uLightVP * vec4(wp + wn * 0.45, 1.0);
+  gl_Position = uVP * vec4(wp, 1.0);
+}`;
+
+const SCENE_FS = `#version 300 es
+precision highp float;
+in vec3 vPos, vNrm, vCol;
+in vec2 vUV;
+in float vMat;
+in vec4 vLightPos;
+uniform vec3 uCam, uSun;
+uniform sampler2D uShadow;
+uniform float uTime;
+out vec4 frag;
+` + GLSL_COMMON + `
+float shadowFactor(float ndl){
+  vec3 sp = vLightPos.xyz / vLightPos.w * 0.5 + 0.5;
+  if (sp.x < 0.002 || sp.x > 0.998 || sp.y < 0.002 || sp.y > 0.998 || sp.z > 0.999) return 1.0;
+  float bias = 0.00035 + 0.0016 * (1.0 - ndl);
+  float texel = 1.0 / 2048.0;
+  float sum = 0.0;
+  for (int y = -1; y <= 1; y++)
+    for (int x = -1; x <= 1; x++) {
+      float d = texture(uShadow, sp.xy + vec2(float(x), float(y)) * texel).r;
+      sum += (sp.z - bias > d) ? 0.0 : 1.0;
+    }
+  float edge = smoothstep(0.0, 0.08, min(min(sp.x, 1.0 - sp.x), min(sp.y, 1.0 - sp.y)));
+  return mix(1.0, sum / 9.0, edge);
+}
+
+void main(){
+  vec3 N = normalize(vNrm);
+  vec3 base = pow(max(vCol, 0.0), vec3(2.2));
+  float m = vMat;
+  float rough = 1.0;
+
+  if (m < 0.5) {                                   // plain (rock, timber trim)
+    base *= 0.92 + 0.16 * vnoise(vPos.xz * 1.7 + vPos.y);
+  } else if (m < 1.5) {                            // dressed stone blocks
+    float rowH = 0.92, blockW = 1.85;
+    float row = floor(vUV.y / rowH);
+    float u = vUV.x + mod(row, 2.0) * 0.5 * blockW;
+    vec2 f = vec2(fract(u / blockW), fract(vUV.y / rowH));
+    float mortar = smoothstep(0.0, 0.05, f.x) * smoothstep(1.0, 0.95, f.x)
+                 * smoothstep(0.0, 0.07, f.y) * smoothstep(1.0, 0.93, f.y);
+    float tone = hash21(vec2(floor(u / blockW), row)) * 0.30 - 0.15;
+    base *= (0.70 + 0.30 * mortar) * (1.0 + tone);
+    base *= 0.93 + 0.14 * vnoise(vPos.xz * 3.1 + vPos.y * 2.3);
+    rough = 0.9;
+  } else if (m < 2.5) {                            // slate / tile roofing
+    float rowH = 0.62;
+    float row = floor(vUV.y / rowH);
+    float u = vUV.x / 0.55 + mod(row, 2.0) * 0.5;
+    float fv = fract(vUV.y / rowH);
+    float scallop = smoothstep(0.0, 0.16, fv) * (0.9 + 0.1 * sin(fract(u) * 6.28));
+    float tone = hash21(vec2(floor(u), row)) * 0.22 - 0.11;
+    base *= (0.74 + 0.26 * scallop) * (1.0 + tone);
+    rough = 0.45;
+  } else if (m < 3.5) {                            // ground
+    float g = vnoise(vUV * 0.055) * 0.5 + vnoise(vUV * 0.22) * 0.3
+            + vnoise(vUV * 0.9) * 0.14 + vnoise(vUV * 3.5) * 0.06;
+    base *= 0.70 + 0.60 * g;
+    base.g *= 0.97 + 0.10 * vnoise(vUV * 0.13 + 31.0);
+  } else if (m < 4.5) {                            // wood
+    float grain = vnoise(vec2(vUV.x * 18.0, vUV.y * 1.5));
+    base *= 0.82 + 0.3 * grain;
+  }
+
+  vec3 L = normalize(uSun);
+  vec3 Vv = normalize(uCam - vPos);
+  float ndl = max(dot(N, L), 0.0);
+  float sh = shadowFactor(ndl);
+
+  vec3 sunCol = vec3(1.0, 0.93, 0.80) * 2.75;
+  vec3 skyCol = vec3(0.32, 0.45, 0.66);
+  vec3 bounce = vec3(0.26, 0.22, 0.13);
+
+  vec3 diffuse = sunCol * ndl * sh;
+  float hemi = 0.5 + 0.5 * N.y;
+  vec3 ambient = mix(bounce, skyCol, hemi) * 0.78;
+
+  // leaves scatter a little light through
+  if (m > 4.5) {
+    float back = max(dot(-N, L), 0.0);
+    diffuse += sunCol * back * 0.22 * sh;
+    ambient *= 1.05;
+  }
+
+  vec3 col = base * (diffuse + ambient);
+
+  // sun specular for stone and slate
+  vec3 H = normalize(L + Vv);
+  float specAmt = (m > 0.5 && m < 2.5) ? 0.22 : 0.0;
+  float spec = pow(max(dot(N, H), 0.0), mix(16.0, 90.0, 1.0 - rough)) * specAmt;
+  col += sunCol * spec * sh;
+
+  // atmosphere
+  float dist = length(uCam - vPos);
+  vec3 vdir = normalize(vPos - uCam);
+  float fogAmt = 1.0 - exp(-pow(dist * 0.00155, 2.7));
+  fogAmt = clamp(fogAmt + smoothstep(320.0, 820.0, dist) * 0.45, 0.0, 1.0);
+  vec3 fogCol = skyColor(vdir, uSun) * 0.97;
+  fogCol += vec3(0.5, 0.4, 0.28) * pow(max(dot(vdir, L), 0.0), 8.0) * 0.12;
+  col = mix(col, fogCol, fogAmt);
+
+  frag = vec4(pow(aces(col * 1.02), vec3(1.0 / 2.2)), 1.0);
+}`;
+
+const DEPTH_VS = `#version 300 es
+precision highp float;
+` + XFORM + `
+uniform mat4 uVP;
+void main(){
+  vec3 wp, wn;
+  placeVertex(wp, wn);
+  gl_Position = uVP * vec4(wp, 1.0);
+}`;
+
+const DEPTH_FS = `#version 300 es
+precision highp float;
+out vec4 frag;
+void main(){ frag = vec4(1.0); }`;
+
+/* ----- flag: geometry is generated procedurally in the vertex shader ----- */
+const FLAG_COMMON = `
+uniform float uTime, uW, uH, uAmp, uPhase;
+vec3 flagPoint(vec2 uv){
+  float x = uv.x * uW;
+  float y = (uv.y - 0.5) * uH;
+  float k = uv.x;
+  float stiff = k * k * 0.75 + k * 0.25;
+  float t = uTime * 1.0 + uPhase;
+  float z = (sin(x * 0.85 - t * 3.4) * 0.62
+           + sin(x * 1.75 + y * 0.9 - t * 5.1) * 0.26
+           + sin(x * 0.45 + y * 1.8 - t * 2.3) * 0.18) * uAmp * stiff;
+  y += sin(x * 0.7 - t * 3.0) * 0.16 * uAmp * stiff;
+  x *= 1.0 - 0.035 * stiff * uAmp;
+  return vec3(x, y, z);
+}`;
+
+const FLAG_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec2 aUV;
+uniform mat4 uVP, uModel, uLightVP;
+out vec2 vUv;
+out vec3 vPos, vNrm;
+out vec4 vLightPos;
+` + FLAG_COMMON + `
+void main(){
+  vec3 p = flagPoint(aUV);
+  float e = 0.02;
+  vec3 du = flagPoint(aUV + vec2(e, 0.0)) - flagPoint(aUV - vec2(e, 0.0));
+  vec3 dv = flagPoint(aUV + vec2(0.0, e)) - flagPoint(aUV - vec2(0.0, e));
+  vec3 n = normalize(cross(dv, du));
+  vec4 wp = uModel * vec4(p, 1.0);
+  vPos = wp.xyz;
+  vNrm = normalize(mat3(uModel) * n);
+  vUv = aUV;
+  vLightPos = uLightVP * vec4(wp.xyz, 1.0);
+  gl_Position = uVP * wp;
+}`;
+
+const FLAG_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+in vec3 vPos, vNrm;
+in vec4 vLightPos;
+uniform vec3 uCam, uSun, uFieldCol, uMarkCol;
+uniform float uTaper;
+uniform sampler2D uShadow;
+out vec4 frag;
+` + GLSL_COMMON + `
+void main(){
+  if (uTaper > 0.5) {                       // pennants taper to a point
+    if (abs(vUv.y - 0.5) > 0.5 * (1.0 - vUv.x * 0.9)) discard;
+  }
+  vec3 col = uFieldCol;
+  if (uTaper < 0.5) {
+    float cross1 = smoothstep(0.085, 0.075, abs(vUv.x - 0.46));
+    float cross2 = smoothstep(0.115, 0.100, abs(vUv.y - 0.5));
+    col = mix(col, uMarkCol, max(cross1, cross2));
+    float border = 1.0 - smoothstep(0.03, 0.045, min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y)));
+    col = mix(col, uMarkCol * 0.9, border * 0.85);
+    float hoist = smoothstep(0.035, 0.02, vUv.x);
+    col = mix(col, vec3(0.30, 0.22, 0.14), hoist);
+  } else {
+    float stripe = step(0.5, fract(vUv.y * 2.0 + 0.25));
+    col = mix(col, uMarkCol, stripe * 0.55);
+  }
+  col *= 0.9 + 0.2 * vnoise(vUv * vec2(40.0, 24.0));        // cloth weave
+
+  vec3 N = normalize(vNrm);
+  vec3 L = normalize(uSun);
+  if (dot(N, normalize(uCam - vPos)) < 0.0) N = -N;          // cloth is two-sided
+  vec3 base = pow(col, vec3(2.2));
+  float ndl = max(dot(N, L), 0.0);
+
+  vec3 sp3 = vLightPos.xyz / vLightPos.w * 0.5 + 0.5;
+  float sh = 1.0;
+  if (sp3.x > 0.0 && sp3.x < 1.0 && sp3.y > 0.0 && sp3.y < 1.0 && sp3.z < 1.0) {
+    float d = texture(uShadow, sp3.xy).r;
+    sh = (sp3.z - 0.0022 > d) ? 0.35 : 1.0;
+  }
+  float trans = pow(max(dot(-N, L), 0.0), 1.5) * 0.45;       // sunlight through the cloth
+  vec3 lit = base * (vec3(1.0, 0.93, 0.80) * 2.6 * ndl * sh
+                   + vec3(0.32, 0.45, 0.66) * 0.9
+                   + vec3(1.0, 0.9, 0.75) * trans);
+  float dist = length(uCam - vPos);
+  float fogAmt = 1.0 - exp(-pow(dist * 0.00155, 2.7));
+  lit = mix(lit, skyColor(normalize(vPos - uCam), uSun) * 0.97, fogAmt);
+  frag = vec4(pow(aces(lit * 1.02), vec3(1.0 / 2.2)), 1.0);
+}`;
+
+/* ----- birds wheeling over the forest ----- */
+const BIRD_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;     // local: x = wing span, z = fore/aft
+layout(location=1) in float aWing;   // -1..1 along the wings
+layout(location=2) in vec4 aBird;    // radius, height, phase, angular speed
+uniform mat4 uVP;
+uniform float uTime;
+out float vShade;
+out vec3 vWorld;
+void main(){
+  float ang = uTime * aBird.w + aBird.z;
+  vec3 centre = vec3(cos(ang) * aBird.x, aBird.y + sin(uTime * 0.6 + aBird.z) * 4.5, sin(ang) * aBird.x);
+  vec3 fwd = normalize(vec3(-sin(ang), 0.08 * cos(uTime * 0.6 + aBird.z), cos(ang)));
+  vec3 side = normalize(cross(vec3(0.0, 1.0, 0.0), fwd));
+  vec3 up = cross(fwd, side);
+  float flap = sin(uTime * 6.5 + aBird.z * 3.0);
+  vec3 p = aPos;
+  p.y += flap * pow(abs(aWing), 1.6) * 1.7;
+  p.x *= 1.0 - 0.12 * abs(flap) * abs(aWing);
+  vec3 world = centre + side * p.x + up * p.y + fwd * p.z;
+  vWorld = world;
+  vShade = 0.55 + 0.45 * clamp(0.5 + 0.5 * flap * sign(aWing), 0.0, 1.0);
+  gl_Position = uVP * vec4(world, 1.0);
+}`;
+
+const BIRD_FS = `#version 300 es
+precision highp float;
+in float vShade;
+in vec3 vWorld;
+uniform vec3 uCam, uSun;
+out vec4 frag;
+` + GLSL_COMMON + `
+void main(){
+  vec3 col = mix(vec3(0.06, 0.06, 0.07), vec3(0.20, 0.19, 0.18), vShade);
+  float dist = length(uCam - vWorld);
+  float fogAmt = 1.0 - exp(-pow(dist * 0.00155, 2.7));
+  col = mix(col, skyColor(normalize(vWorld - uCam), uSun) * 0.97, fogAmt * 0.9);
+  frag = vec4(pow(aces(col * 1.02), vec3(1.0 / 2.2)), 1.0);
+}`;
+
+/* --------------------------------------------------------------- engine */
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, powerPreference: 'high-performance' });
+if (!gl) {
+  document.getElementById('err').style.display = 'flex';
+  document.getElementById('hud').style.display = 'none';
+  return;
+}
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s), src.split('\n').map((l, i) => (i+1) + ': ' + l).join('\n'));
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+function program(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p));
+    throw new Error('program link failed');
+  }
+  const u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+  return { p, u };
+}
+function buf(data, target) {
+  const b = gl.createBuffer();
+  const t = target || gl.ARRAY_BUFFER;
+  gl.bindBuffer(t, b); gl.bufferData(t, data, gl.STATIC_DRAW);
+  return b;
+}
+function makeMesh(d, inst) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const attach = (loc, data, size) => {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf(data));
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+  };
+  attach(0, d.p, 3); attach(1, d.n, 3); attach(2, d.c, 3); attach(3, d.uv, 2); attach(4, d.m, 1);
+  let instances = 0;
+  if (inst) {
+    attach(5, inst.a, 4); gl.vertexAttribDivisor(5, 1);
+    attach(6, inst.b, 4); gl.vertexAttribDivisor(6, 1);
+    instances = inst.a.length / 4;
+  }
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buf(d.i, gl.ELEMENT_ARRAY_BUFFER));
+  gl.bindVertexArray(null);
+  return { vao, count: d.i.length, type: d.i instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, instances };
+}
+
+/* ---- build the world ---- */
+const castle = buildCastle();
+for (const [x, y, z] of castle.towerTops) {
+  castle.geo.cyl(x, z, y - 0.4, y + 5.4, 0.15, 0.11, 6, COL.wood, MAT.WOOD, false, false);
+}
+const castleMesh  = makeMesh(castle.geo.buffers());
+const terrainMesh = makeMesh(buildTerrain());
+const forest = scatterForest();
+const pineMesh = makeMesh(buildConifer().buffers(), { a: new Float32Array(forest.pine.a), b: new Float32Array(forest.pine.b) });
+const oakMesh  = makeMesh(buildBroadleaf().buffers(), { a: new Float32Array(forest.oak.a), b: new Float32Array(forest.oak.b) });
+
+const flagData = buildFlagMesh(22, 12);
+const flagVao = gl.createVertexArray();
+gl.bindVertexArray(flagVao);
+gl.bindBuffer(gl.ARRAY_BUFFER, buf(flagData.uv));
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buf(flagData.i, gl.ELEMENT_ARRAY_BUFFER));
+gl.bindVertexArray(null);
+
+/* a small flock, each bird on its own slow circle */
+const birdPos = new Float32Array([
+   0, 0,  1.1,  -4.0, 0, -0.6,   0, 0, -0.8,
+   0, 0,  1.1,   0, 0, -0.8,     4.0, 0, -0.6,
+]);
+const birdWing = new Float32Array([0, -1, 0,  0, 0, 1]);
+const birdInst = [];
+{
+  const r = mulberry32(99);
+  for (let k = 0; k < 11; k++) {
+    birdInst.push(125 + r() * 185, 80 + r() * 46, r() * 6.28, (r() < 0.5 ? -1 : 1) * (0.045 + r() * 0.05));
+  }
+}
+const birdVao = gl.createVertexArray();
+gl.bindVertexArray(birdVao);
+gl.bindBuffer(gl.ARRAY_BUFFER, buf(birdPos));
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ARRAY_BUFFER, buf(birdWing));
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ARRAY_BUFFER, buf(new Float32Array(birdInst)));
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(2, 1);
+gl.bindVertexArray(null);
+
+const sceneProg = program(SCENE_VS, SCENE_FS);
+const depthProg = program(DEPTH_VS, DEPTH_FS);
+const skyProg   = program(SKY_VS, SKY_FS);
+const flagProg  = program(FLAG_VS, FLAG_FS);
+const birdProg  = program(BIRD_VS, BIRD_FS);
+
+/* ---- shadow map ---- */
+const SHADOW_SIZE = 2048;
+const shadowTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+const shadowFbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+const shadowColor = gl.createRenderbuffer();
+gl.bindRenderbuffer(gl.RENDERBUFFER, shadowColor);
+gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, SHADOW_SIZE, SHADOW_SIZE);
+gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, shadowColor);
+if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) console.warn('shadow framebuffer incomplete');
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+/* ---- light ---- */
+const SUN = V.norm([0.54, 0.47, 0.64]);                    // direction towards the sun
+const lightCenter = [0, 32, 0];
+const lightView = m4lookAt(
+  [lightCenter[0] + SUN[0] * 360, lightCenter[1] + SUN[1] * 360, lightCenter[2] + SUN[2] * 360],
+  lightCenter, [0, 1, 0]);
+const lightProj = m4ortho(-165, 165, -165, 165, 1, 720);
+const LIGHT_VP = m4mul(lightProj, lightView);
+
+const IDENT = m4identity();
+const POLE_TOP = castle.poleBase + 13.5;
+
+function m4trs(tx, ty, tz, rotY) {
+  const c = Math.cos(rotY), s = Math.sin(rotY);
+  return new Float32Array([c,0,-s,0,  0,1,0,0,  s,0,c,0,  tx,ty,tz,1]);
+}
+
+function drawGeom(prog, vp) {
+  gl.useProgram(prog.p);
+  gl.uniformMatrix4fv(prog.u.uVP, false, vp);
+  gl.uniformMatrix4fv(prog.u.uModel, false, IDENT);
+  gl.vertexAttrib4f(5, 0, 0, 0, 1);
+  gl.vertexAttrib4f(6, 0, 1, 1, 0);
+
+  gl.uniform1f(prog.u.uSway, 0);
+  for (const mesh of [terrainMesh, castleMesh]) {
+    gl.bindVertexArray(mesh.vao);
+    gl.drawElements(gl.TRIANGLES, mesh.count, mesh.type, 0);
+  }
+  gl.uniform1f(prog.u.uSway, 1);
+  for (const mesh of [pineMesh, oakMesh]) {
+    gl.bindVertexArray(mesh.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, mesh.type, 0, mesh.instances);
+  }
+  gl.bindVertexArray(null);
+}
+
+function drawFlags(vp, camPos, time) {
+  gl.useProgram(flagProg.p);
+  gl.uniformMatrix4fv(flagProg.u.uVP, false, vp);
+  gl.uniformMatrix4fv(flagProg.u.uLightVP, false, LIGHT_VP);
+  gl.uniform3fv(flagProg.u.uCam, camPos);
+  gl.uniform3fv(flagProg.u.uSun, SUN);
+  gl.uniform1f(flagProg.u.uTime, time);
+  gl.uniform1i(flagProg.u.uShadow, 0);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.bindVertexArray(flagVao);
+
+  const windDir = 0.55 + 0.20 * Math.sin(time * 0.23) + 0.06 * Math.sin(time * 0.67);
+
+  // the great banner on the keep
+  gl.uniformMatrix4fv(flagProg.u.uModel, false,
+    m4trs(castle.keep[0] + Math.cos(windDir) * 0.3, POLE_TOP - 4.6, castle.keep[1] - Math.sin(windDir) * 0.3, windDir));
+  gl.uniform1f(flagProg.u.uW, 11.5);
+  gl.uniform1f(flagProg.u.uH, 7.2);
+  gl.uniform1f(flagProg.u.uAmp, 1.0);
+  gl.uniform1f(flagProg.u.uPhase, 0.0);
+  gl.uniform1f(flagProg.u.uTaper, 0.0);
+  gl.uniform3f(flagProg.u.uFieldCol, 0.58, 0.09, 0.12);
+  gl.uniform3f(flagProg.u.uMarkCol, 0.92, 0.78, 0.32);
+  gl.drawElements(gl.TRIANGLES, flagData.i.length, gl.UNSIGNED_SHORT, 0);
+
+  // pennants on the corner towers
+  gl.uniform1f(flagProg.u.uW, 4.6);
+  gl.uniform1f(flagProg.u.uH, 1.9);
+  gl.uniform1f(flagProg.u.uAmp, 1.45);
+  gl.uniform1f(flagProg.u.uTaper, 1.0);
+  gl.uniform3f(flagProg.u.uFieldCol, 0.62, 0.13, 0.14);
+  gl.uniform3f(flagProg.u.uMarkCol, 0.90, 0.80, 0.38);
+  castle.towerTops.forEach(function (t, k) {
+    gl.uniform1f(flagProg.u.uPhase, k * 1.7);
+    gl.uniformMatrix4fv(flagProg.u.uModel, false, m4trs(t[0], t[1] + 4.3, t[2], windDir + 0.1 * Math.sin(time * 0.4 + k)));
+    gl.drawElements(gl.TRIANGLES, flagData.i.length, gl.UNSIGNED_SHORT, 0);
+  });
+  gl.bindVertexArray(null);
+}
+
+/* ---- frame ---- */
+let W = 0, H = 0;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+  const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (w !== W || h !== H) { W = canvas.width = w; H = canvas.height = h; }
+}
+window.addEventListener('resize', resize);
+
+gl.enable(gl.DEPTH_TEST);
+gl.clearColor(0.55, 0.68, 0.82, 1);
+
+const startTime = performance.now();
+let renderTime = 0;
+
+function frame(now) {
+  // "#t=12.5" freezes the animation at a given second (handy for stills)
+  const m = (location.hash || '').match(/t=([0-9.]+)/);
+  renderTime = m ? parseFloat(m[1]) : (now - startTime) / 1000;
+  drawScene(renderTime);
+  requestAnimationFrame(frame);
+}
+
+function drawScene(time) {
+  resize();
+
+  // camera: one full, seamless orbit every ~74 seconds
+  const a = time * 0.085;
+  const radius = 146 + 22 * Math.sin(a);
+  const eyeY = 62 + 17 * Math.sin(a * 2.0 + 0.9);
+  const eye = [Math.cos(a) * radius, eyeY, Math.sin(a) * radius];
+  const target = [0, 50 + 3 * Math.sin(a * 3.0), 0];
+  const view = m4lookAt(eye, target, [0, 1, 0]);
+  const aspect = W / H;
+  const fov = 46 * Math.PI / 180 * clamp(1.25 / aspect, 1, 1.55);   // keep the keep in frame on tall windows
+  const proj = m4perspective(fov, aspect, 1.0, 1600);
+  const VP = m4mul(proj, view);
+
+  // 1. shadow map
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(depthProg.p);
+  gl.uniform1f(depthProg.u.uTime, time);
+  drawGeom(depthProg, LIGHT_VP);
+
+  // 2. beauty pass
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, W, H);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  gl.depthMask(false);
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(skyProg.p);
+  gl.uniformMatrix4fv(skyProg.u.uInvVP, false, m4invert(VP));
+  gl.uniform3fv(skyProg.u.uCam, eye);
+  gl.uniform3fv(skyProg.u.uSun, SUN);
+  gl.uniform1f(skyProg.u.uTime, time);
+  gl.bindVertexArray(null);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+
+  gl.useProgram(sceneProg.p);
+  gl.uniform3fv(sceneProg.u.uCam, eye);
+  gl.uniform3fv(sceneProg.u.uSun, SUN);
+  gl.uniform1f(sceneProg.u.uTime, time);
+  gl.uniformMatrix4fv(sceneProg.u.uLightVP, false, LIGHT_VP);
+  gl.uniform1i(sceneProg.u.uShadow, 0);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  drawGeom(sceneProg, VP);
+
+  drawFlags(VP, eye, time);
+
+  gl.useProgram(birdProg.p);
+  gl.uniformMatrix4fv(birdProg.u.uVP, false, VP);
+  gl.uniform3fv(birdProg.u.uCam, eye);
+  gl.uniform3fv(birdProg.u.uSun, SUN);
+  gl.uniform1f(birdProg.u.uTime, time);
+  gl.bindVertexArray(birdVao);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, birdInst.length / 4);
+  gl.bindVertexArray(null);
+}
+
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Forest Keep</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #9eb8bd; }
+    body { font-family: Georgia, 'Times New Roman', serif; }
+    #scene { display: block; width: 100%; height: 100%; }
+    .title-card {
+      position: fixed;
+      top: clamp(22px, 5vw, 58px);
+      left: clamp(22px, 5vw, 68px);
+      pointer-events: none;
+      color: #fff5dc;
+      text-shadow: 0 2px 18px rgba(12, 29, 29, .55);
+      letter-spacing: .16em;
+      animation: appear 1.8s ease-out both;
+    }
+    .title-card .eyebrow { font: 600 10px/1.2 Arial, sans-serif; letter-spacing: .42em; opacity: .86; }
+    .title-card h1 { margin: 10px 0 5px; font-size: clamp(29px, 5vw, 62px); font-weight: 500; letter-spacing: .09em; }
+    .title-card p { margin: 0; font: 11px/1.6 Arial, sans-serif; letter-spacing: .29em; opacity: .83; }
+    .vignette { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 150px rgba(17, 37, 34, .42); }
+    .loading { position: fixed; inset: 0; display: grid; place-items: center; background: #243e3a; color: #f7e5bd; font: 11px Arial, sans-serif; letter-spacing: .35em; transition: opacity .8s ease; }
+    .loading.hide { opacity: 0; pointer-events: none; }
+    @keyframes appear { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="A medieval castle surrounded by an animated forest"></canvas>
+  <div class="title-card">
+    <div class="eyebrow">A STORY IN STONE</div>
+    <h1>THE FOREST KEEP</h1>
+    <p>WHERE THE PINES MEET THE SKY</p>
+  </div>
+  <div class="vignette"></div>
+  <div class="loading" id="loading">ENTERING THE KEEP</div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    (() => {
+      'use strict';
+
+      const canvas = document.getElementById('scene');
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.05;
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x9eb9be);
+      scene.fog = new THREE.FogExp2(0x9eb9be, 0.0072);
+
+      const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 250);
+      camera.position.set(29, 17, 29);
+
+      const clock = new THREE.Clock();
+      const animatedTrees = [];
+      const driftingClouds = [];
+      const flagGeometryParts = [];
+
+      // Lighting: a cool skylight and a warm low sun give the stone some depth.
+      const hemi = new THREE.HemisphereLight(0xd9edf0, 0x29423a, 1.65);
+      scene.add(hemi);
+      const sun = new THREE.DirectionalLight(0xffd8a2, 3.2);
+      sun.position.set(-35, 48, 26);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.camera.left = -42;
+      sun.shadow.camera.right = 42;
+      sun.shadow.camera.top = 42;
+      sun.shadow.camera.bottom = -42;
+      sun.shadow.camera.near = 1;
+      sun.shadow.camera.far = 130;
+      sun.shadow.bias = -0.00035;
+      scene.add(sun);
+      const rimLight = new THREE.DirectionalLight(0x8db5cc, 0.75);
+      rimLight.position.set(35, 25, -25);
+      scene.add(rimLight);
+
+      function makeCanvasTexture(draw, repeatX = 1, repeatY = 1) {
+        const textureCanvas = document.createElement('canvas');
+        textureCanvas.width = 512;
+        textureCanvas.height = 512;
+        draw(textureCanvas.getContext('2d'), textureCanvas.width, textureCanvas.height);
+        const texture = new THREE.CanvasTexture(textureCanvas);
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        texture.repeat.set(repeatX, repeatY);
+        texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        texture.encoding = THREE.sRGBEncoding;
+        return texture;
+      }
+
+      const stoneTexture = makeCanvasTexture((ctx, w, h) => {
+        ctx.fillStyle = '#71827d';
+        ctx.fillRect(0, 0, w, h);
+        let seed = 11;
+        const random = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+        const rows = 12;
+        for (let row = 0; row < rows; row++) {
+          const y = row * h / rows;
+          const rowHeight = h / rows;
+          let x = row % 2 ? -46 : -20;
+          while (x < w) {
+            const blockW = 62 + random() * 54;
+            ctx.fillStyle = `hsl(${145 + random() * 16}, ${8 + random() * 10}%, ${43 + random() * 12}%)`;
+            ctx.fillRect(x + 2, y + 2, blockW - 4, rowHeight - 4);
+            ctx.strokeStyle = 'rgba(35, 49, 47, .42)';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x + 1, y + 1, blockW - 2, rowHeight - 2);
+            x += blockW;
+          }
+        }
+        const shade = ctx.createLinearGradient(0, 0, w, h);
+        shade.addColorStop(0, 'rgba(255,255,255,.08)');
+        shade.addColorStop(.5, 'rgba(255,255,255,0)');
+        shade.addColorStop(1, 'rgba(9,25,25,.18)');
+        ctx.fillStyle = shade;
+        ctx.fillRect(0, 0, w, h);
+      }, 2.7, 1.4);
+
+      const roofTexture = makeCanvasTexture((ctx, w, h) => {
+        ctx.fillStyle = '#531f25';
+        ctx.fillRect(0, 0, w, h);
+        for (let y = -h; y < h * 2; y += 22) {
+          ctx.strokeStyle = 'rgba(24, 10, 14, .46)';
+          ctx.lineWidth = 7;
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y + w * .12); ctx.stroke();
+          ctx.strokeStyle = 'rgba(203, 104, 77, .23)';
+          ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.moveTo(0, y - 4); ctx.lineTo(w, y + w * .12 - 4); ctx.stroke();
+        }
+      }, 1.3, 1.7);
+
+      const mossTexture = makeCanvasTexture((ctx, w, h) => {
+        ctx.fillStyle = '#466b47'; ctx.fillRect(0, 0, w, h);
+        for (let i = 0; i < 1700; i++) {
+          const x = Math.random() * w, y = Math.random() * h, a = .08 + Math.random() * .22;
+          ctx.fillStyle = `rgba(${36 + Math.random() * 30}, ${76 + Math.random() * 65}, ${40 + Math.random() * 30}, ${a})`;
+          ctx.fillRect(x, y, 2 + Math.random() * 7, 2 + Math.random() * 7);
+        }
+      }, 6, 6);
+
+      const stoneMaterial = new THREE.MeshStandardMaterial({ map: stoneTexture, roughness: .91, metalness: .02 });
+      const darkStoneMaterial = new THREE.MeshStandardMaterial({ color: 0x4f625f, roughness: 1 });
+      const roofMaterial = new THREE.MeshStandardMaterial({ map: roofTexture, roughness: .8, metalness: .05 });
+      const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x4a2822, roughness: .9 });
+      const timberMaterial = new THREE.MeshStandardMaterial({ color: 0x251d18, roughness: .88 });
+      const goldMaterial = new THREE.MeshStandardMaterial({ color: 0xc8963d, roughness: .3, metalness: .65 });
+
+      function mesh(geometry, material, x = 0, y = 0, z = 0) {
+        const object = new THREE.Mesh(geometry, material);
+        object.position.set(x, y, z);
+        object.castShadow = true;
+        object.receiveShadow = true;
+        return object;
+      }
+
+      function box(w, h, d, material, x = 0, y = 0, z = 0) {
+        return mesh(new THREE.BoxGeometry(w, h, d), material, x, y, z);
+      }
+
+      // A large, softly layered ground plane lets the forest extend beyond the hill.
+      const groundMaterial = new THREE.MeshStandardMaterial({ map: mossTexture, roughness: 1 });
+      const ground = mesh(new THREE.PlaneGeometry(210, 210), groundMaterial, 0, -0.18, 0);
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      const hill = mesh(new THREE.ConeGeometry(30, 8, 64, 5), groundMaterial, 0, 3.5, 0);
+      hill.receiveShadow = true;
+      scene.add(hill);
+
+      // A few exposed roots/rocks break up the perfectly green hill silhouette.
+      const rockMaterial = new THREE.MeshStandardMaterial({ color: 0x536966, roughness: 1 });
+      for (let i = 0; i < 15; i++) {
+        const a = i * 2.37;
+        const r = 17 + (i % 4) * 2.2;
+        const rock = mesh(new THREE.DodecahedronGeometry(.45 + (i % 3) * .19, 0), rockMaterial, Math.cos(a) * r, 5.15 + (i % 2) * .15, Math.sin(a) * r);
+        rock.scale.y = .7;
+        scene.add(rock);
+      }
+
+      function createTree(x, z, scale, phase) {
+        const tree = new THREE.Group();
+        tree.position.set(x, 0, z);
+        tree.scale.setScalar(scale);
+        const trunk = mesh(new THREE.CylinderGeometry(.24, .37, 2.3, 7), timberMaterial, 0, 1.15, 0);
+        trunk.castShadow = true;
+        tree.add(trunk);
+        const greens = [0x1e483b, 0x285844, 0x356a4d, 0x1a3f37];
+        for (let tier = 0; tier < 3; tier++) {
+          const foliage = mesh(new THREE.ConeGeometry(1.45 - tier * .2, 2.5, 9), new THREE.MeshStandardMaterial({ color: greens[(Math.floor(Math.abs(x + z)) + tier) % greens.length], roughness: 1 }), 0, 2.25 + tier * 1.18, 0);
+          foliage.castShadow = true;
+          tree.add(foliage);
+        }
+        tree.userData = { phase, baseRotation: (x * .011 + z * .007) };
+        animatedTrees.push(tree);
+        scene.add(tree);
+      }
+
+      // Dense rings of pines form a broad forest around the castle. The central clearing is kept open.
+      let treeSeed = 83;
+      const rand = () => { treeSeed = (treeSeed * 16807) % 2147483647; return (treeSeed - 1) / 2147483646; };
+      for (let i = 0; i < 118; i++) {
+        const angle = rand() * Math.PI * 2;
+        const radius = 23 + rand() * 48;
+        const x = Math.cos(angle) * radius + (rand() - .5) * 5;
+        const z = Math.sin(angle) * radius + (rand() - .5) * 5;
+        const scale = .72 + rand() * 1.12;
+        createTree(x, z, scale, rand() * Math.PI * 2);
+      }
+      // A handful of nearer, taller silhouettes frame the lower edge of the view.
+      for (let i = 0; i < 18; i++) {
+        const x = (i < 9 ? -1 : 1) * (25 + rand() * 22);
+        const z = -35 + (i % 9) * 8 + rand() * 3;
+        createTree(x, z, 1.1 + rand() * .85, rand() * 6);
+      }
+
+      // Castle footprint and courtyard walls.
+      const castle = new THREE.Group();
+      castle.position.y = 7.0;
+      scene.add(castle);
+      castle.add(box(15, 1.2, 12, darkStoneMaterial, 0, .55, 0));
+
+      const wallH = 5.8;
+      castle.add(box(14.7, wallH, .85, stoneMaterial, 0, wallH / 2 + 1.05, -5.55));
+      castle.add(box(14.7, wallH, .85, stoneMaterial, 0, wallH / 2 + 1.05, 5.55));
+      castle.add(box(.85, wallH, 10.4, stoneMaterial, -6.95, wallH / 2 + 1.05, 0));
+      castle.add(box(.85, wallH, 10.4, stoneMaterial, 6.95, wallH / 2 + 1.05, 0));
+
+      function battlements(parent, width, depth, y, x, z, material = stoneMaterial, countX = 7, countZ = 2) {
+        const crenelW = .78;
+        for (let i = 0; i < countX; i++) {
+          const px = x - width / 2 + (i + .5) * width / countX;
+          parent.add(box(crenelW, 1.35, 1.05, material, px, y, z - depth / 2 + .52));
+          parent.add(box(crenelW, 1.35, 1.05, material, px, y, z + depth / 2 - .52));
+        }
+        for (let i = 0; i < countZ; i++) {
+          const pz = z - depth / 2 + (i + .5) * depth / countZ;
+          parent.add(box(1.05, 1.35, crenelW, material, x - width / 2 + .52, y, pz));
+          parent.add(box(1.05, 1.35, crenelW, material, x + width / 2 - .52, y, pz));
+        }
+      }
+      battlements(castle, 14.7, .85, 7.55, 0, -5.55, stoneMaterial, 8, 1);
+      battlements(castle, 14.7, .85, 7.55, 0, 5.55, stoneMaterial, 8, 1);
+      battlements(castle, .85, 10.4, 7.55, -6.95, 0, stoneMaterial, 1, 6);
+      battlements(castle, .85, 10.4, 7.55, 6.95, 0, stoneMaterial, 1, 6);
+
+      // Keep: the tall central block visible above the curtain walls.
+      castle.add(box(8.0, 9.0, 7.3, stoneMaterial, 0, 6.7, .55));
+      castle.add(box(8.45, .55, 7.75, darkStoneMaterial, 0, 11.25, .55));
+      battlements(castle, 8.45, 7.75, 12.1, 0, .55, stoneMaterial, 5, 4);
+
+      // Warm windows and slit windows.
+      const windowMaterial = new THREE.MeshStandardMaterial({ color: 0xf2b65e, emissive: 0xc55c20, emissiveIntensity: 1.4, roughness: .3 });
+      const slitMaterial = new THREE.MeshStandardMaterial({ color: 0x172c2c, roughness: .6 });
+      function castleWindow(x, y, z, rotationY = 0, w = .48, h = 1.2) {
+        const group = new THREE.Group();
+        group.position.set(x, y, z);
+        group.rotation.y = rotationY;
+        group.add(mesh(new THREE.PlaneGeometry(w, h), windowMaterial, 0, 0, 0));
+        group.add(mesh(new THREE.BoxGeometry(w * .12, h * 1.04, .08), timberMaterial, 0, 0, -.05));
+        group.add(mesh(new THREE.BoxGeometry(w * 1.04, .08, .08), timberMaterial, 0, 0, -.05));
+        castle.add(group);
+      }
+      castleWindow(-1.9, 8.2, -3.14, 0, .65, 1.3); castleWindow(1.9, 8.2, -3.14, 0, .65, 1.3);
+      castleWindow(-2.15, 5.7, -3.14, 0, .5, 1.05); castleWindow(2.15, 5.7, -3.14, 0, .5, 1.05);
+      castleWindow(-2.1, 8.2, 4.24, Math.PI, .65, 1.3); castleWindow(2.1, 8.2, 4.24, Math.PI, .65, 1.3);
+      for (const x of [-6.48, 6.48]) {
+        for (const z of [-2.1, 1.1, 3.4]) castleWindow(x, 5.2, z, x < 0 ? Math.PI / 2 : -Math.PI / 2, .32, .9);
+      }
+      // Gate, wood beams, and a portcullis on the front curtain wall.
+      castle.add(box(3.25, 3.65, .22, timberMaterial, 0, 2.78, -6.02));
+      castle.add(mesh(new THREE.BoxGeometry(2.55, 3.05, .16), new THREE.MeshStandardMaterial({ color: 0x613a25, roughness: .9 }), 0, 2.72, -6.14));
+      for (let x = -1.0; x <= 1.01; x += .5) castle.add(box(.1, 2.65, .12, goldMaterial, x, 2.72, -6.27));
+      castle.add(box(2.6, .1, .12, goldMaterial, 0, 1.48, -6.27));
+      castle.add(box(2.6, .1, .12, goldMaterial, 0, 2.25, -6.27));
+      castle.add(box(2.6, .1, .12, goldMaterial, 0, 3.02, -6.27));
+      for (let x = -1.7; x <= 1.71; x += 1.7) castle.add(box(.24, 6.6, 1.1, timberMaterial, x, 4.5, -6.02));
+
+      function tower(x, z, scale = 1) {
+        const group = new THREE.Group();
+        group.position.set(x, 0, z);
+        const radius = 2.05 * scale;
+        const height = 10.1 * scale;
+        group.add(mesh(new THREE.CylinderGeometry(radius * 1.05, radius, height, 16), stoneMaterial, 0, height / 2 + .8, 0));
+        group.add(mesh(new THREE.CylinderGeometry(radius * 1.18, radius * 1.12, .48, 16), darkStoneMaterial, 0, height + 1.0, 0));
+        group.add(mesh(new THREE.ConeGeometry(radius * 1.35, 4.25 * scale, 16), roofMaterial, 0, height + 3.15 * scale, 0));
+        const crenelCount = 8;
+        for (let i = 0; i < crenelCount; i++) {
+          const a = i / crenelCount * Math.PI * 2;
+          group.add(box(.68 * scale, 1.2 * scale, .68 * scale, stoneMaterial, Math.cos(a) * radius * .98, height + 1.72 * scale, Math.sin(a) * radius * .98));
+        }
+        const slit = mesh(new THREE.PlaneGeometry(.32 * scale, 1.0 * scale), slitMaterial, 0, height * .62, -radius * 1.02);
+        group.add(slit);
+        group.traverse(child => { if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; } });
+        castle.add(group);
+      }
+      tower(-6.4, -5.0, 1.02);
+      tower(6.4, -5.0, 1.02);
+      tower(-6.4, 5.0, 1.02);
+      tower(6.4, 5.0, 1.02);
+
+      // Flagpole and a custom, gently rippling banner. It is updated every frame without user input.
+      const flagPole = mesh(new THREE.CylinderGeometry(.09, .11, 8.0, 12), goldMaterial, 0, 18.0, .55);
+      castle.add(flagPole);
+      const finial = mesh(new THREE.SphereGeometry(.24, 12, 8), goldMaterial, 0, 22.1, .55);
+      castle.add(finial);
+      const flagW = 4.8, flagH = 2.35, flagCols = 32, flagRows = 8;
+      const positions = [];
+      const indices = [];
+      for (let row = 0; row <= flagRows; row++) {
+        const v = row / flagRows;
+        for (let col = 0; col <= flagCols; col++) {
+          const u = col / flagCols;
+          positions.push(u * flagW, (1 - v) * flagH, 0);
+        }
+      }
+      for (let row = 0; row < flagRows; row++) {
+        for (let col = 0; col < flagCols; col++) {
+          const a = row * (flagCols + 1) + col;
+          const b = a + 1, c = a + flagCols + 1, d = c + 1;
+          indices.push(a, c, b, b, c, d);
+        }
+      }
+      const flagGeo = new THREE.BufferGeometry();
+      flagGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      flagGeo.setIndex(indices);
+      flagGeo.computeVertexNormals();
+      const flagMat = new THREE.MeshStandardMaterial({ color: 0x9b2934, roughness: .74, metalness: .02, side: THREE.DoubleSide });
+      const flag = new THREE.Mesh(flagGeo, flagMat);
+      flag.position.set(.08, 19.7, .55);
+      flag.castShadow = true;
+      castle.add(flag);
+      flagGeometryParts.push({ geometry: flagGeo, width: flagW, cols: flagCols, rows: flagRows });
+      // A gold emblem gives the banner a recognizable heraldic mark.
+      const emblem = new THREE.Mesh(new THREE.CircleGeometry(.45, 16), goldMaterial);
+      emblem.position.set(2.35, 20.85, .78);
+      castle.add(emblem);
+
+      // Misty cloud cards add scale to the sky without taking attention from the keep.
+      const cloudMaterial = new THREE.MeshBasicMaterial({ color: 0xd7e6e5, transparent: true, opacity: .25, depthWrite: false });
+      function cloud(x, y, z, scale) {
+        const group = new THREE.Group();
+        group.position.set(x, y, z); group.scale.setScalar(scale);
+        for (let i = 0; i < 5; i++) {
+          const puff = mesh(new THREE.SphereGeometry(2.5 + (i % 2) * .9, 12, 8), cloudMaterial, (i - 2) * 2.4, (i % 2) * .35, 0);
+          puff.castShadow = false; puff.receiveShadow = false; group.add(puff);
+        }
+        group.userData.speed = .25 + scale * .035;
+        driftingClouds.push(group);
+        scene.add(group);
+      }
+      cloud(-32, 28, -30, 1.8); cloud(30, 24, -42, 1.3); cloud(-55, 20, 8, 1.05);
+
+      function animateFlag(time) {
+        const position = flagGeometryParts[0].geometry.attributes.position;
+        for (let row = 0; row <= flagRows; row++) {
+          for (let col = 0; col <= flagCols; col++) {
+            const i = (row * (flagCols + 1) + col) * 3;
+            const u = col / flagCols;
+            const v = row / flagRows;
+            const wave = Math.sin(time * 4.0 - u * 7.0 + v * 1.7) * .18 * u;
+            const secondary = Math.sin(time * 2.1 + u * 4.0) * .075 * u;
+            position.array[i + 2] = wave + secondary;
+          }
+        }
+        position.needsUpdate = true;
+        flagGeometryParts[0].geometry.computeVertexNormals();
+        flagGeometryParts[0].geometry.attributes.normal.needsUpdate = true;
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        const elapsed = clock.getElapsedTime();
+
+        // The only camera motion is an automatic orbit around the castle.
+        const orbit = elapsed * .105;
+        const radius = 35;
+        camera.position.set(Math.cos(orbit) * radius, 18.7 + Math.sin(elapsed * .28) * .8, Math.sin(orbit) * radius);
+        camera.lookAt(0, 15.4, 0);
+
+        animateFlag(elapsed);
+        animatedTrees.forEach(tree => {
+          tree.rotation.z = Math.sin(elapsed * .75 + tree.userData.phase) * .016;
+          tree.rotation.x = Math.cos(elapsed * .57 + tree.userData.phase) * .01;
+        });
+        driftingClouds.forEach(group => {
+          group.position.x += group.userData.speed * .008;
+          if (group.position.x > 75) group.position.x = -75;
+        });
+
+        renderer.render(scene, camera);
+      }
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      requestAnimationFrame(() => {
+        document.getElementById('loading').classList.add('hide');
+        animate();
+      });
+    })();
+  </script>
+</body>
+</html>

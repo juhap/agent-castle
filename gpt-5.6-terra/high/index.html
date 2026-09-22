@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Castle Above the Forest</title>
+  <style>
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#82b9d1}
+    canvas{display:block}
+    #caption{position:fixed;left:0;right:0;bottom:27px;text-align:center;color:#f7edd4;
+      font:600 12px/1 Georgia,serif;letter-spacing:4px;text-transform:uppercase;
+      text-shadow:0 2px 5px #142834;pointer-events:none;opacity:.85}
+  </style>
+</head>
+<body>
+<div id="caption">The Castle Above the Forest</div>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x82b9d1);
+scene.fog = new THREE.FogExp2(0x9abfd0, .014);
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .1, 250);
+const renderer = new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
+renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.08;
+document.body.appendChild(renderer.domElement);
+
+// A quiet painted sky behind the geometry.
+const sky = new THREE.Mesh(new THREE.SphereGeometry(190,32,16), new THREE.ShaderMaterial({
+  side:THREE.BackSide, depthWrite:false, uniforms:{}, vertexShader:'varying vec3 p;void main(){p=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+  fragmentShader:'varying vec3 p;void main(){float h=normalize(p).y*.5+.5; vec3 dusk=vec3(.98,.66,.40); vec3 blue=vec3(.29,.57,.76); gl_FragColor=vec4(mix(dusk,blue,smoothstep(.12,.72,h)),1.);}'
+})); scene.add(sky);
+
+const hemi=new THREE.HemisphereLight(0xd9f0ff,0x30492c,2.2);scene.add(hemi);
+const sun=new THREE.DirectionalLight(0xffe1ac,3.5);sun.position.set(-18,25,12);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-35;sun.shadow.camera.right=35;sun.shadow.camera.top=35;sun.shadow.camera.bottom=-35;scene.add(sun);
+
+const group=new THREE.Group();scene.add(group);
+const mat={ grass:new THREE.MeshStandardMaterial({color:0x4d7a3b,roughness:1}),
+ darkGrass:new THREE.MeshStandardMaterial({color:0x355c31,roughness:1}),
+ stone:new THREE.MeshStandardMaterial({color:0x898273,roughness:.9}),
+ stoneDark:new THREE.MeshStandardMaterial({color:0x625f59,roughness:1}),
+ roof:new THREE.MeshStandardMaterial({color:0x483d38,roughness:.95}),
+ wood:new THREE.MeshStandardMaterial({color:0x412c1e,roughness:1}),
+ leaf:new THREE.MeshStandardMaterial({color:0x28512f,roughness:1}),
+ leaf2:new THREE.MeshStandardMaterial({color:0x426c30,roughness:1}),
+ trunk:new THREE.MeshStandardMaterial({color:0x533a25,roughness:1}),
+ flag:new THREE.MeshStandardMaterial({color:0xb53628,roughness:.78,side:THREE.DoubleSide}) };
+
+function mesh(geo, material, x=0,y=0,z=0){const m=new THREE.Mesh(geo,material);m.position.set(x,y,z);m.castShadow=m.receiveShadow=true;group.add(m);return m}
+// Layered terrain makes the hill look like it grew out of the forest.
+mesh(new THREE.CylinderGeometry(32,38,1.2,80,5),mat.darkGrass,0,-1.05,0);
+const hillGeo=new THREE.SphereGeometry(15,60,32); hillGeo.scale(1,.43,1); const hill=mesh(hillGeo,mat.grass,0,-.2,0);
+// Path spiralling gently up the hill
+const pathMat=new THREE.MeshStandardMaterial({color:0x9b7a50,roughness:1});
+for(let i=0;i<34;i++){const a=1.8+i*.22, r=14-i*.29; const y=.18+Math.max(0,1-r/15)*5.4; const p=mesh(new THREE.CylinderGeometry(.55,.62,.07,8),pathMat,Math.cos(a)*r,y,Math.sin(a)*r);p.rotation.y=a;}
+
+// Forest: individual trunks and low-poly layered crowns around the base of the hill.
+const rand=(n)=>{const x=Math.sin(n*9283.17)*43758.5453;return x-Math.floor(x)};
+function tree(x,z,s,n){let y=-.2; const r=Math.sqrt(x*x+z*z); if(r<15)y+=Math.sqrt(Math.max(0,1-r*r/225))*6.1-.6;
+ const t=mesh(new THREE.CylinderGeometry(.12*s,.18*s,1.45*s,6),mat.trunk,x,y+.7*s,z);t.castShadow=true;
+ for(let j=0;j<3;j++){const c=mesh(new THREE.ConeGeometry((.95-j*.16)*s,(1.55-j*.14)*s,7),j===1?mat.leaf2:mat.leaf,x,y+(1.35+j*.62)*s,z);c.castShadow=true;}
+}
+for(let i=0;i<260;i++){const a=rand(i)*Math.PI*2, r=15.5+Math.sqrt(rand(i+20))*22;tree(Math.cos(a)*r,Math.sin(a)*r,.55+rand(i+30)*.72,i)}
+
+// Castle architecture.
+const castle=new THREE.Group();group.add(castle);
+function castleMesh(g,m,x,y,z){const q=new THREE.Mesh(g,m);q.position.set(x,y,z);q.castShadow=q.receiveShadow=true;castle.add(q);return q}
+function battlements(w,d,y){ for(let x=-w/2+.45;x<w/2;x+=.85){castleMesh(new THREE.BoxGeometry(.42,.5,.62),mat.stone,x,y,-d/2);castleMesh(new THREE.BoxGeometry(.42,.5,.62),mat.stone,x,y,d/2)} for(let z=-d/2+.7;z<d/2;z+=.85){castleMesh(new THREE.BoxGeometry(.62,.5,.42),mat.stone,-w/2,y,z);castleMesh(new THREE.BoxGeometry(.62,.5,.42),mat.stone,w/2,y,z)} }
+// main keep and its roof
+castleMesh(new THREE.BoxGeometry(6.2,5.8,5.3),mat.stone,0,6.2,0);battlements(6.2,5.3,9.15);
+castleMesh(new THREE.BoxGeometry(3.4,3.2,2.3),mat.stoneDark,0,4.9,3.75);
+const door=castleMesh(new THREE.BoxGeometry(1.15,1.8,.08),mat.wood,0,4.25,4.92);
+// narrow glowing windows
+const windowMat=new THREE.MeshStandardMaterial({color:0xffc35e,emissive:0x7a3514,emissiveIntensity:1.2});
+[[ -1.75,6.4,2.67],[1.75,6.4,2.67],[-2.15,7.7,2.67],[2.15,7.7,2.67],[-3.13,6.4,0],[3.13,6.4,0]].forEach(([x,y,z])=>castleMesh(new THREE.BoxGeometry(.42,.75,.08),windowMat,x,y,z));
+function tower(x,z,h=7.5,r=1.45){castleMesh(new THREE.CylinderGeometry(r,r,h,12),mat.stone,x,3.7+h/2,z); for(let i=0;i<12;i++){let a=i*Math.PI/6;castleMesh(new THREE.BoxGeometry(.48,.55,.48),mat.stone,x+Math.cos(a)*r,3.7+h+.1,z+Math.sin(a)*r)} const roof=castleMesh(new THREE.ConeGeometry(r*1.22,2.4,12),mat.roof,x,3.7+h+1.43,z); return 3.7+h+2.55;}
+const tops=[tower(-4,-3.6,7.8,1.5),tower(4,-3.6,8.7,1.5),tower(-4,3.6,8.5,1.5),tower(4,3.6,7.5,1.5)];
+// Tower bridge walls
+castleMesh(new THREE.BoxGeometry(8,3.1,.8),mat.stone,0,7.1,-3.6);castleMesh(new THREE.BoxGeometry(8,3.1,.8),mat.stone,0,7.1,3.6);
+for(let x=-3.4;x<=3.4;x+=.85){castleMesh(new THREE.BoxGeometry(.42,.55,.55),mat.stone,x,8.95,-3.6);castleMesh(new THREE.BoxGeometry(.42,.55,.55),mat.stone,x,8.95,3.6)}
+// central watch tower rises proudly above it all
+castleMesh(new THREE.CylinderGeometry(1.85,1.85,7.2,12),mat.stone,0,11.4,0);
+for(let i=0;i<12;i++){const a=i*Math.PI/6;castleMesh(new THREE.BoxGeometry(.55,.58,.55),mat.stone,Math.cos(a)*1.85,15.2,Math.sin(a)*1.85)}
+castleMesh(new THREE.ConeGeometry(2.18,2.9,12),mat.roof,0,17.0,0);
+
+// Small stone blocks subtly break up otherwise perfect walls.
+for(let i=0;i<62;i++){let side=i%4, u=(rand(i+77)-.5)*5.4, v=4.0+rand(i+90)*4.5; let x=side<2?u:(side===2?-3.13:3.13),z=side<2?(side===0?2.67:-2.67):u; const b=castleMesh(new THREE.BoxGeometry(.38,.18,.1),mat.stoneDark,x,v,z); if(side>=2)b.rotation.y=Math.PI/2;}
+
+// A pole and a cloth grid animated as a real wave.
+const pole=castleMesh(new THREE.CylinderGeometry(.045,.055,5.5,8),mat.wood,0,20.7,0);
+const flagW=3.15, flagH=1.55, segX=24, segY=8;
+const fg=new THREE.PlaneGeometry(flagW,flagH,segX,segY); fg.translate(flagW/2,0,0);
+const flag=castleMesh(fg,mat.flag,.03,22.6,0); flag.rotation.y=.18;
+const flagBase=fg.attributes.position.array.slice();
+castleMesh(new THREE.SphereGeometry(.16,10,8),new THREE.MeshStandardMaterial({color:0xd3ad5a,metalness:.65,roughness:.35}),0,23.48,0);
+
+// Extra birds add scale without becoming a distraction.
+const birdMat=new THREE.MeshBasicMaterial({color:0x243844,side:THREE.DoubleSide});
+for(let i=0;i<9;i++){let b=new THREE.Mesh(new THREE.BufferGeometry(),birdMat);let a=rand(i+401)*6.28;b.geometry.setAttribute('position',new THREE.Float32BufferAttribute([-.3,0,0,0,0,0,.3,0,0],3));b.position.set(Math.cos(a)* (20+rand(i)*18),13+rand(i+4)*8,Math.sin(a)*(20+rand(i)*18));b.rotation.y=-a;group.add(b);}
+
+const clock=new THREE.Clock();
+function animate(){requestAnimationFrame(animate);const t=clock.getElapsedTime();
+ const p=flag.geometry.attributes.position; for(let y=0;y<=segY;y++)for(let x=0;x<=segX;x++){let n=(y*(segX+1)+x)*3, u=x/segX, v=y/segY; p.array[n]=flagBase[n];p.array[n+1]=flagBase[n+1]+Math.sin(t*3.1-u*6+v*1.7)*.065*u;p.array[n+2]=Math.sin(t*3.1-u*7+v*2.3)*.33*u+Math.sin(t*5.3-u*13)*.045*u;}p.needsUpdate=true;flag.geometry.computeVertexNormals();
+ const a=t*.105;camera.position.set(Math.cos(a)*31,15+Math.sin(t*.18)*2.2,Math.sin(a)*31);camera.lookAt(0,8.6,0);renderer.render(scene,camera);
+}animate();
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+</script>
+</body>
+</html>

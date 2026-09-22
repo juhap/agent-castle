@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Castle in the Forest</title>
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #a9d3db; }
+    body { font-family: Georgia, serif; }
+    canvas { display: block; width: 100%; height: 100%; background: linear-gradient(#7fb5cf 0%, #bedbd0 62%, #dce4c3 100%); }
+    .label { position: fixed; left: 28px; bottom: 24px; color: #fff8e7; text-shadow: 0 2px 12px #223b3b9c; pointer-events: none; letter-spacing: .04em; }
+    .label strong { display: block; font-size: clamp(18px, 2vw, 27px); font-weight: normal; }
+    .label span { display: block; margin-top: 5px; font: 11px system-ui, sans-serif; letter-spacing: .23em; text-transform: uppercase; opacity: .85; }
+    @media (max-width: 600px) { .label { left: 17px; bottom: 16px; } }
+  </style>
+</head>
+<body>
+<canvas id="scene" aria-label="Animated three-dimensional medieval castle on a wooded hill"></canvas>
+<div class="label"><strong>Castle in the Forest</strong><span>A quiet journey around the hill</span></div>
+<script>
+(() => {
+  'use strict';
+  const canvas = document.getElementById('scene');
+  const gl = canvas.getContext('webgl', { antialias: true, alpha: true, depth: true }) || canvas.getContext('experimental-webgl', { antialias: true, alpha: true, depth: true });
+  if (!gl) {
+    document.querySelector('.label span').textContent = 'WebGL is required to view this scene';
+    return;
+  }
+
+  const vertexSource = `
+    attribute vec3 aPosition;
+    attribute vec3 aNormal;
+    attribute vec3 aColor;
+    attribute float aWave;
+    uniform mat4 uProjection;
+    uniform mat4 uView;
+    uniform float uTime;
+    varying vec3 vColor;
+    varying vec3 vNormal;
+    varying float vDistance;
+    void main() {
+      vec3 p = aPosition;
+      if (aWave > 0.0) {
+        float ripple = sin(uTime * 3.2 - aWave * 3.9);
+        p.z += ripple * aWave * 0.32;
+        p.y += sin(uTime * 3.2 - aWave * 3.9 + 0.8) * aWave * 0.075;
+      }
+      vec4 eye = uView * vec4(p, 1.0);
+      gl_Position = uProjection * eye;
+      vDistance = length(eye.xyz);
+      vNormal = aNormal;
+      vColor = aColor;
+    }
+  `;
+  const fragmentSource = `
+    precision mediump float;
+    uniform vec3 uFog;
+    varying vec3 vColor;
+    varying vec3 vNormal;
+    varying float vDistance;
+    void main() {
+      vec3 light = normalize(vec3(-0.55, 0.85, 0.42));
+      float diffuse = max(dot(normalize(vNormal), light), 0.0);
+      float shade = 0.65 + diffuse * 0.35;
+      vec3 color = vColor * shade;
+      float fog = smoothstep(72.0, 155.0, vDistance);
+      gl_FragColor = vec4(mix(color, uFog, fog), 1.0);
+    }
+  `;
+  function compile(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+    return shader;
+  }
+  const program = gl.createProgram();
+  gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+  gl.useProgram(program);
+
+  const vertices = [];
+  const palette = {
+    grass: [0.37, 0.52, 0.32], hill: [0.41, 0.51, 0.30],
+    stone: [0.72, 0.70, 0.60], stoneDark: [0.54, 0.55, 0.51],
+    trim: [0.84, 0.79, 0.64], roof: [0.27, 0.38, 0.43],
+    wood: [0.35, 0.23, 0.16], gold: [0.91, 0.69, 0.30],
+    red: [0.72, 0.19, 0.18]
+  };
+  let seed = 49173;
+  function random() { seed = (1664525 * seed + 1013904223) >>> 0; return seed / 4294967296; }
+  function vary(color, amount = 0.06) { const d = (random() - 0.5) * amount; return color.map(v => Math.max(0, Math.min(1, v + d))); }
+  function cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+  function normal(a, b, c) {
+    const v = cross([b[0]-a[0],b[1]-a[1],b[2]-a[2]], [c[0]-a[0],c[1]-a[1],c[2]-a[2]]);
+    const length = Math.hypot(...v) || 1;
+    return v.map(n => n / length);
+  }
+  function put(p, n, c, wave = 0) { vertices.push(...p, ...n, ...c, wave); }
+  function tri(a, b, c, color, wa = 0, wb = 0, wc = 0) {
+    const n = normal(a, b, c);
+    put(a,n,color,wa); put(b,n,color,wb); put(c,n,color,wc);
+  }
+  function quad(a, b, c, d, color) { tri(a,b,c,color); tri(a,c,d,color); }
+  function box(cx, cy, cz, w, h, d, color, angle = 0) {
+    const x=w/2, y=h/2, z=d/2;
+    const p=[[-x,-y,-z],[x,-y,-z],[x,y,-z],[-x,y,-z],[-x,-y,z],[x,-y,z],[x,y,z],[-x,y,z]];
+    const co=Math.cos(angle), si=Math.sin(angle);
+    for (const v of p) { const px=v[0]; v[0]=cx+px*co+v[2]*si; v[1]+=cy; v[2]=cz-px*si+v[2]*co; }
+    for (const f of [[4,5,6,7],[1,0,3,2],[0,4,7,3],[5,1,2,6],[7,6,2,3],[0,1,5,4]])
+      quad(p[f[0]],p[f[1]],p[f[2]],p[f[3]],vary(color,0.045));
+  }
+  function cylinder(x,y,z,r,h,sides,color,rTop=r) {
+    for (let i=0; i<sides; i++) {
+      const a=i*Math.PI*2/sides, b=(i+1)*Math.PI*2/sides;
+      const ca=Math.cos(a), sa=Math.sin(a), cb=Math.cos(b), sb=Math.sin(b);
+      const p1=[x+r*ca,y,z+r*sa], p2=[x+r*cb,y,z+r*sb];
+      const p3=[x+rTop*cb,y+h,z+rTop*sb], p4=[x+rTop*ca,y+h,z+rTop*sa];
+      quad(p2,p1,p4,p3,vary(color,0.07));
+      tri([x,y+h,z],p3,p4,color);
+    }
+  }
+  function cone(x,y,z,r,h,sides,color) { cylinder(x,y,z,r,h,sides,color,0.01); }
+  function sphere(x,y,z,r,color,rings=5,sides=8) {
+    for (let i=0;i<rings;i++) {
+      const t0=i*Math.PI/rings, t1=(i+1)*Math.PI/rings;
+      for (let j=0;j<sides;j++) {
+        const a=j*2*Math.PI/sides, b=(j+1)*2*Math.PI/sides;
+        const p=(t,q)=>[x+r*Math.sin(t)*Math.cos(q),y+r*Math.cos(t),z+r*Math.sin(t)*Math.sin(q)];
+        quad(p(t1,b),p(t1,a),p(t0,a),p(t0,b),vary(color,0.08));
+      }
+    }
+  }
+  function smoothstep(a,b,x) { const t=Math.min(1,Math.max(0,(x-a)/(b-a))); return t*t*(3-2*t); }
+  function groundHeight(x,z) {
+    const r=Math.hypot(x,z);
+    const hill=6.25*(1-smoothstep(7.5,26,r));
+    const bumps=(Math.sin(x*0.21+z*0.13)*0.19+Math.cos(z*0.28-x*0.12)*0.17)*smoothstep(7,26,r);
+    const undulation=0.34*Math.sin(x*0.065)*Math.cos(z*0.07);
+    return hill+bumps+undulation;
+  }
+  const castleY=groundHeight(0,0)+0.13;
+  // The continuous terrain carries the hill, clearing and surrounding forest.
+  const extent=112, count=112, step=extent*2/count;
+  for (let iz=0;iz<count;iz++) for(let ix=0;ix<count;ix++) {
+    const x=-extent+ix*step,z=-extent+iz*step;
+    const p=(px,pz)=>[px,groundHeight(px,pz),pz];
+    const radius=Math.hypot(x+step/2,z+step/2);
+    const base=radius<26?palette.hill:palette.grass;
+    quad(p(x,z),p(x,z+step),p(x+step,z+step),p(x+step,z),vary(base,0.10));
+  }
+  // Winding pale road rising to the front gate.
+  for(let i=0;i<54;i++) {
+    const z0=7.4+i*0.47,z1=z0+0.47;
+    const center=z=>1.05*Math.sin((z-7.4)*0.16);
+    const width=z=>1.25+0.025*(z-7.4);
+    const road=(z, side)=>{ const x=center(z)+side*width(z); return [x,groundHeight(x,z)+0.11,z]; };
+    quad(road(z0,-1),road(z1,-1),road(z1,1),road(z0,1),vary([0.67,0.59,0.42],0.045));
+  }
+  // Rock footing and a cobbled courtyard.
+  box(0,castleY-0.13,0,14.7,0.32,14.7,[0.52,0.52,0.44]);
+  box(0,castleY+0.02,0,11.4,0.11,11.4,[0.58,0.57,0.48]);
+  for(let i=0;i<125;i++) {
+    const x=(random()-0.5)*10.9,z=(random()-0.5)*10.9;
+    box(x,castleY+0.093,z,0.23+random()*0.42,0.025,0.22+random()*0.32,vary([0.68,0.66,0.56],0.15),random()*0.5);
+  }
+  // Four curtain walls and their merlons.
+  const wallY=castleY+2.73;
+  box(0,wallY,-6.05,11.8,5.45,1.08,palette.stone);
+  box(-6.05,wallY,0,1.08,5.45,11.8,palette.stone);
+  box(6.05,wallY,0,1.08,5.45,11.8,palette.stone);
+  box(-3.87,wallY,6.05,4.15,5.45,1.08,palette.stone);
+  box(3.87,wallY,6.05,4.15,5.45,1.08,palette.stone);
+  for (let side of [-1,1]) {
+    for(let i=-4;i<=4;i++) {
+      box(i*1.23,castleY+5.86,side*6.05,0.78,0.92,1.10,palette.trim);
+      box(side*6.05,castleY+5.86,i*1.23,1.10,0.92,0.78,palette.trim);
+    }
+  }
+  // Courses and mortar seams make the broad faces read as masonry.
+  for (let row=1;row<=5;row++) {
+    const y=castleY+row*0.88;
+    for(const z of [-6.61,6.61]) {
+      box(-4.0,y,z,3.9,0.035,0.035,palette.stoneDark);
+      box(4.0,y,z,3.9,0.035,0.035,palette.stoneDark);
+      for(let j=-5;j<=5;j++) {
+        const x=j*0.89+(row%2)*0.4;
+        if(Math.abs(x)>1.9 || z<0) box(x,y+0.42,z,0.032,0.73,0.04,palette.stoneDark);
+      }
+    }
+    for(const x of [-6.61,6.61]) {
+      box(x,y,0,0.035,0.035,11.1,palette.stoneDark);
+      for(let j=-5;j<=5;j++) box(x,y+0.42,j*0.9+(row%2)*0.43,0.04,0.73,0.032,palette.stoneDark);
+    }
+  }
+  // Corner turrets with overhanging slate roofs and a ring of battlements.
+  const towers=[[-6.05,-6.05],[6.05,-6.05],[-6.05,6.05],[6.05,6.05]];
+  for(const [x,z] of towers) {
+    cylinder(x,castleY,z,1.62,8.15,14,palette.stone);
+    cylinder(x,castleY+1.7,z,1.69,0.14,14,palette.trim);
+    cylinder(x,castleY+5.2,z,1.69,0.14,14,palette.trim);
+    cylinder(x,castleY+7.62,z,1.86,0.38,14,palette.stoneDark);
+    for(let i=0;i<10;i++) {
+      const a=(i+0.5)*Math.PI*2/10;
+      box(x+1.53*Math.cos(a),castleY+8.32,z+1.53*Math.sin(a),0.55,0.75,0.6,palette.trim,-a);
+    }
+    cone(x,castleY+8.52,z,2.13,3.15,14,palette.roof);
+    cylinder(x,castleY+11.58,z,0.12,0.34,8,palette.gold);
+    // Arrow slits on the side facing outward.
+    const sx=x<0?-1:1,sz=z<0?-1:1;
+    box(x+sx*1.60,castleY+4.45,z,0.055,1.05,0.19,[0.22,0.29,0.29]);
+    box(x,castleY+4.45,z+sz*1.60,0.19,1.05,0.055,[0.22,0.29,0.29]);
+  }
+  // A prominent gatehouse and its arched-looking oak entrance.
+  box(0,castleY+3.48,6.23,3.65,6.95,2.12,palette.stone);
+  box(0,castleY+1.53,7.315,2.25,3.06,0.09,[0.19,0.20,0.17]);
+  box(0,castleY+1.43,7.38,1.86,2.83,0.08,palette.wood);
+  for(let x=-0.72;x<=0.74;x+=0.37) box(x,castleY+1.44,7.44,0.045,2.7,0.035,[0.24,0.15,0.11]);
+  box(0,castleY+2.86,7.49,1.9,0.08,0.07,[0.13,0.11,0.09]);
+  sphere(0.60,castleY+1.45,7.52,0.075,palette.gold,4,6);
+  for(let i=-1;i<=1;i++) box(i*1.28,castleY+7.36,6.23,0.72,0.82,2.16,palette.trim);
+  box(0,castleY+5.58,7.34,0.28,0.74,0.05,[0.23,0.29,0.30]);
+  // The keep is tall enough to stay visible throughout the full orbit.
+  box(0,castleY+4.38,-1.22,5.05,8.75,5.05,palette.stone);
+  box(0,castleY+8.78,-1.22,5.55,0.38,5.55,palette.stoneDark);
+  for(let x=-2.14;x<=2.15;x+=1.42) {
+    box(x,castleY+9.42,-3.72,0.82,0.91,0.78,palette.trim);
+    box(x,castleY+9.42,1.27,0.82,0.91,0.78,palette.trim);
+  }
+  for(let z=-3.36;z<=1.0;z+=1.43) {
+    box(-2.52,castleY+9.42,z,0.78,0.91,0.82,palette.trim);
+    box(2.52,castleY+9.42,z,0.78,0.91,0.82,palette.trim);
+  }
+  // Roof pyramid, with four triangular slate faces.
+  const peak=[0,castleY+12.05,-1.22], e=2.83, ry=castleY+9.0, cz=-1.22;
+  tri([-e,ry,cz-e],[e,ry,cz-e],peak,palette.roof);
+  tri([e,ry,cz-e],[e,ry,cz+e],peak,palette.roof);
+  tri([e,ry,cz+e],[-e,ry,cz+e],peak,palette.roof);
+  tri([-e,ry,cz+e],[-e,ry,cz-e],peak,palette.roof);
+  for(let y of [castleY+3.05,castleY+6.15]) {
+    for(let x of [-1.31,1.31]) {
+      box(x,y,1.34,0.46,1.28,0.08,[0.20,0.27,0.30]);
+      box(x,y-0.66,1.42,0.71,0.15,0.23,palette.trim);
+      box(x,y,-3.78,0.46,1.28,0.08,[0.20,0.27,0.30]);
+      box(x,y-0.66,-3.86,0.71,0.15,0.23,palette.trim);
+    }
+    for(let z of [-2.55,0.12]) {
+      box(-2.59,y,z,0.08,1.28,0.46,[0.20,0.27,0.30]);
+      box(2.59,y,z,0.08,1.28,0.46,[0.20,0.27,0.30]);
+    }
+  }
+  box(0,castleY+1.57,1.36,1.35,3.10,0.08,palette.wood);
+  // A red and gold swallowtail flag fixed to the rear-left turret.
+  const fx=-6.05,fz=-6.05,flagTop=castleY+15.14;
+  cylinder(fx,castleY+11.55,fz,0.065,4.25,8,[0.36,0.31,0.24]);
+  sphere(fx,castleY+15.86,fz,0.19,palette.gold,5,8);
+  const strips=20, rows=8, flagLength=3.48, flagHeight=1.46;
+  function flagPoint(i,j) {
+    const t=i/strips, v=j/rows;
+    const cut=t>0.72 ? (t-0.72)/0.28*0.40 : 0;
+    return [fx+flagLength*t,flagTop-flagHeight*v+(v-0.5)*cut,fz];
+  }
+  for(let i=0;i<strips;i++) for(let j=0;j<rows;j++) {
+    const c=j<rows/2 ? palette.red : palette.gold;
+    const a=flagPoint(i,j),b=flagPoint(i+1,j),d=flagPoint(i,j+1),e=flagPoint(i+1,j+1);
+    tri(a,d,e,c,i/strips,i/strips,(i+1)/strips);
+    tri(a,e,b,c,i/strips,(i+1)/strips,(i+1)/strips);
+  }
+  // Low-poly evergreens and round-canopy trees fill the far landscape.
+  const greens=[[0.20,0.39,0.29],[0.24,0.44,0.31],[0.31,0.49,0.31],[0.19,0.35,0.28],[0.39,0.49,0.29]];
+  for(let i=0;i<630;i++) {
+    const a=random()*Math.PI*2,r=26+Math.sqrt(random())*82;
+    let x=Math.cos(a)*r,z=Math.sin(a)*r;
+    if(z>8 && z<36 && Math.abs(x-1.05*Math.sin((z-7.4)*0.16))<3.4) continue;
+    x+=(random()-0.5)*1.8; z+=(random()-0.5)*1.8;
+    const y=groundHeight(x,z), scale=0.72+random()*0.95;
+    const foliage=greens[Math.floor(random()*greens.length)];
+    if(random()<0.74) {
+      cylinder(x,y,z,0.19*scale,2.0*scale,6,palette.wood);
+      cone(x,y+0.85*scale,z,1.33*scale,3.3*scale,7,vary(foliage,0.06));
+      cone(x,y+2.0*scale,z,1.08*scale,3.05*scale,7,vary(foliage,0.06));
+      cone(x,y+3.04*scale,z,0.80*scale,2.58*scale,7,vary(foliage,0.06));
+    } else {
+      cylinder(x,y,z,0.20*scale,2.25*scale,6,palette.wood);
+      sphere(x,y+2.9*scale,z,1.48*scale,foliage,5,7);
+      sphere(x-0.78*scale,y+2.45*scale,z+0.23*scale,0.85*scale,foliage,4,7);
+      sphere(x+0.7*scale,y+2.5*scale,z-0.28*scale,0.85*scale,foliage,4,7);
+    }
+  }
+  // A few rocks and shrubs give the open slope some scale.
+  for(let i=0;i<86;i++) {
+    const a=random()*Math.PI*2,r=8+random()*21,x=Math.cos(a)*r,z=Math.sin(a)*r,y=groundHeight(x,z);
+    if(random()<0.61) {
+      sphere(x,y+0.18,z,0.25+random()*0.48,vary([0.52,0.54,0.47],0.13),3,6);
+    } else {
+      sphere(x,y+0.30,z,0.34+random()*0.32,vary([0.29,0.44,0.27],0.11),4,6);
+    }
+  }
+
+  const data=new Float32Array(vertices);
+  const buffer=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+  gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);
+  const stride=10*4;
+  for(const [name,size,offset] of [['aPosition',3,0],['aNormal',3,12],['aColor',3,24],['aWave',1,36]]) {
+    const loc=gl.getAttribLocation(program,name);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc,size,gl.FLOAT,false,stride,offset);
+  }
+  const uProjection=gl.getUniformLocation(program,'uProjection');
+  const uView=gl.getUniformLocation(program,'uView');
+  const uTime=gl.getUniformLocation(program,'uTime');
+  gl.uniform3f(gl.getUniformLocation(program,'uFog'),0.72,0.84,0.78);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
+  gl.disable(gl.CULL_FACE);
+  gl.clearColor(0,0,0,0);
+
+  function perspective(fov,aspect,near,far) {
+    const f=1/Math.tan(fov/2),nf=1/(near-far);
+    return new Float32Array([f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,2*far*near*nf,0]);
+  }
+  function lookAt(eye,target) {
+    let f=target.map((v,i)=>v-eye[i]); let l=Math.hypot(...f); f=f.map(v=>v/l);
+    let s=cross(f,[0,1,0]); l=Math.hypot(...s); s=s.map(v=>v/l);
+    const u=cross(s,f);
+    return new Float32Array([s[0],u[0],-f[0],0, s[1],u[1],-f[1],0, s[2],u[2],-f[2],0,
+      -s[0]*eye[0]-s[1]*eye[1]-s[2]*eye[2],
+      -u[0]*eye[0]-u[1]*eye[1]-u[2]*eye[2],
+      f[0]*eye[0]+f[1]*eye[1]+f[2]*eye[2],1]);
+  }
+  function resize() {
+    const dpr=Math.min(window.devicePixelRatio||1,2);
+    const width=Math.max(1,Math.floor(canvas.clientWidth*dpr)),height=Math.max(1,Math.floor(canvas.clientHeight*dpr));
+    if(canvas.width!==width||canvas.height!==height) { canvas.width=width;canvas.height=height;gl.viewport(0,0,width,height); }
+    gl.uniformMatrix4fv(uProjection,false,perspective(Math.PI/3.6,width/height,0.1,240));
+  }
+  window.addEventListener('resize',resize);
+  resize();
+  const start=performance.now();
+  function frame(now) {
+    const seconds=(now-start)/1000;
+    const angle=seconds*0.13+0.62;
+    const radius=34;
+    const eye=[Math.sin(angle)*radius,19+Math.sin(seconds*0.19)*0.7,Math.cos(angle)*radius];
+    resize();
+    gl.uniformMatrix4fv(uView,false,lookAt(eye,[0,castleY+6.0,0]));
+    gl.uniform1f(uTime,seconds);
+    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES,0,data.length/10);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
