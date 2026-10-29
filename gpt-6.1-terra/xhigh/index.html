@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Highwood Castle</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+  body { background: #dbe4d5; color: #263e35; font-family: 'DM Sans', Arial, sans-serif; }
+  #scene { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .topline { position: absolute; z-index: 2; top: 0; left: 0; right: 0; padding: 29px 42px; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
+  .brand { display: flex; align-items: center; gap: 12px; font-size: 10px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; }
+  .brand-mark { width: 30px; height: 30px; border: 1px solid #566e5b; border-radius: 50%; display: grid; place-items: center; font-family: Georgia, serif; font-size: 17px; font-weight: 400; letter-spacing: 0; }
+  .edition { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; opacity: .7; }
+  .intro { position: absolute; z-index: 2; top: 14%; left: 6.5%; max-width: 270px; pointer-events: none; }
+  .eyebrow { display: flex; align-items: center; gap: 10px; color: #738572; font-size: 10px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; }
+  .eyebrow:before { content: ''; width: 27px; height: 1px; background: #8e9e89; }
+  h1 { margin: 15px 0 11px; font-family: 'Cormorant Garamond', Georgia, serif; font-size: clamp(44px, 5vw, 76px); line-height: .88; font-weight: 500; letter-spacing: -.045em; }
+  .intro p { color: #6c7d6b; font-family: 'Cormorant Garamond', Georgia, serif; font-size: 17px; line-height: 1.3; max-width: 190px; }
+  .footer { position: absolute; z-index: 2; left: 42px; right: 42px; bottom: 30px; display: flex; align-items: end; justify-content: space-between; pointer-events: none; }
+  .footer-label { font-size: 9px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; color: #748676; }
+  .footer-label strong { display: block; color: #344d3e; letter-spacing: .16em; margin-bottom: 7px; }
+  .orbit { display: flex; align-items: center; gap: 10px; color: #667c69; font-size: 9px; letter-spacing: .17em; text-transform: uppercase; }
+  .orbit-icon { width: 31px; height: 31px; border: 1px solid #9bad99; border-radius: 50%; display: grid; place-items: center; font-size: 15px; }
+  @media (max-width: 700px) { .topline { padding: 22px; } .edition { display: none; } .intro { top: 13%; left: 24px; } h1 { font-size: 48px; } .intro p { font-size: 15px; max-width: 150px; } .footer { left: 24px; right: 24px; bottom: 22px; } .orbit { font-size: 0; } .orbit-icon { font-size: 15px; } }
+</style>
+</head>
+<body>
+<div id="scene" aria-label="An animated three-dimensional castle on a forested hill"></div>
+<header class="topline"><div class="brand"><span class="brand-mark">H</span><span>Highwood<br>Kingdom</span></div><div class="edition">A place out of time &nbsp; / &nbsp; No. 01</div></header>
+<section class="intro"><div class="eyebrow">Beyond the woods</div><h1>Highwood<br>Castle</h1><p>A quiet kingdom above the evergreens.</p></section>
+<footer class="footer"><div class="footer-label"><strong>The highlands</strong>Somewhere in the old world</div><div class="orbit"><span class="orbit-icon">↻</span> A world in motion</div></footer>
+<script src="three.min.js"></script>
+<script>
+(() => {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xdbe5d8);
+  scene.fog = new THREE.Fog(0xdbe5d8, 48, 100);
+  const camera = new THREE.PerspectiveCamera(36, innerWidth / innerHeight, 0.1, 150);
+  const renderer = new THREE.WebGLRenderer({antialias: true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.12;
+  document.getElementById('scene').appendChild(renderer.domElement);
+
+  scene.add(new THREE.HemisphereLight(0xf5f6df, 0x687e65, 2.0));
+  const sun = new THREE.DirectionalLight(0xffefd3, 2.5);
+  sun.position.set(-18, 32, 20); sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, {left:-25, right:25, top:25, bottom:-25, near:1, far:80});
+  sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
+  scene.add(sun);
+
+  let seed = 1234567;
+  const rand = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const material = (color, extra={}) => new THREE.MeshStandardMaterial({color, roughness: 1, ...extra});
+  const stone = material(0xc9c3a9), stoneLight = material(0xdad3b9), stoneDark = material(0x9f9e89);
+  const roof = material(0x566c67), wood = material(0x725441), dark = material(0x354b43), gold = material(0xd3aa66);
+  function mesh(geometry, mat, x=0, y=0, z=0, parent=scene) {
+    const m = new THREE.Mesh(geometry, mat); m.position.set(x,y,z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
+  }
+  function box(w,h,d,mat,x,y,z,parent=scene) { return mesh(new THREE.BoxGeometry(w,h,d),mat,x,y,z,parent); }
+  function cylinder(rt,rb,h,mat,x,y,z,segments=12,parent=scene) { return mesh(new THREE.CylinderGeometry(rt,rb,h,segments),mat,x,y,z,parent); }
+
+  // A softly faceted, raised island, with a broad crown for the castle.
+  function height(r) { if (r < 5.8) return 4.0; const t = Math.min(1, (r-5.8)/12.5); return 0.45 + 3.55 * (1-t)*(1-t)*(1+2*t); }
+  const verts=[], colors=[], indices=[]; const rings=32, sides=96, radius=20;
+  const groundColors = [new THREE.Color(0x7b956c),new THREE.Color(0x829a70),new THREE.Color(0x91a77b),new THREE.Color(0x728c67)];
+  for(let j=0;j<=rings;j++) { const r=radius*j/rings; for(let i=0;i<=sides;i++) { const a=i/sides*Math.PI*2; const y=height(r) + (j>10 ? Math.sin(a*7+j*.7)*.06 : 0); verts.push(Math.cos(a)*r,y,Math.sin(a)*r); const c=groundColors[Math.floor(rand()*groundColors.length)].clone(); c.multiplyScalar(.96+rand()*.08); colors.push(c.r,c.g,c.b); } }
+  for(let j=0;j<rings;j++) for(let i=0;i<sides;i++) { const a=j*(sides+1)+i,b=a+sides+1; indices.push(a,a+1,b,b,a+1,b+1); }
+  const landGeo=new THREE.BufferGeometry(); landGeo.setAttribute('position',new THREE.Float32BufferAttribute(verts,3)); landGeo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3)); landGeo.setIndex(indices); landGeo.computeVertexNormals();
+  mesh(landGeo,material(0xffffff,{vertexColors:true,flatShading:true}));
+  cylinder(20,19.2,1.1,material(0x70866a),0,-.12,0,96);
+  cylinder(19.2,18.7,.24,material(0x5d735e),0,-.78,0,96);
+
+  // A winding ochre path leads from the gate through the trees.
+  const pathPoints=[];
+  for(let i=0;i<=30;i++) { const z=5+i*.47; const x=Math.sin(i*.14)*.7; pathPoints.push(new THREE.Vector3(x,height(Math.hypot(x,z))+.035,z)); }
+  const pathVerts=[], pathIdx=[];
+  pathPoints.forEach((p,i)=>{ const w=.62+i*.015; pathVerts.push(p.x-w,p.y,p.z,p.x+w,p.y,p.z); if(i<pathPoints.length-1){const k=i*2;pathIdx.push(k,k+2,k+1,k+1,k+2,k+3);} });
+  const pathGeo=new THREE.BufferGeometry(); pathGeo.setAttribute('position',new THREE.Float32BufferAttribute(pathVerts,3)); pathGeo.setIndex(pathIdx); pathGeo.computeVertexNormals(); mesh(pathGeo,material(0xb7ac87,{side:THREE.DoubleSide}));
+
+  // Forest: varied overlapping tiers make each evergreen feel hand-built.
+  const foliage=[material(0x496b50),material(0x587955),material(0x63845d),material(0x3f634c),material(0x718d65)];
+  const trunkMat=material(0x79674e);
+  const treeGeo=new THREE.ConeGeometry(1,1,7), trunkGeo=new THREE.CylinderGeometry(.12,.18,1,6);
+  function tree(x,z,s) { const y=height(Math.hypot(x,z)); const g=new THREE.Group();g.position.set(x,y,z); g.rotation.y=rand()*6.28;scene.add(g); const trunk=mesh(trunkGeo,trunkMat,0,.55*s,0,g);trunk.scale.set(s,s,s); const f=foliage[Math.floor(rand()*foliage.length)]; for(let j=0;j<3;j++){const crown=mesh(treeGeo,f,0,(1.0+j*.62)*s,0,g);crown.scale.set((1.05-j*.19)*s,1.55*s,(1.05-j*.19)*s);} }
+  for(let i=0;i<255;i++) { const a=rand()*Math.PI*2, r=7.5+Math.sqrt(rand())*11.8, x=Math.cos(a)*r,z=Math.sin(a)*r; if(z>5 && Math.abs(x-Math.sin((z-5)/.47*.14)*.7)<1.8) continue; tree(x,z,.7+rand()*.6); }
+  // Small boulders at the forest edge.
+  const rockMat=material(0x9ca58d,{flatShading:true});
+  for(let i=0;i<35;i++){const a=rand()*6.28,r=7+rand()*12.5,x=Math.cos(a)*r,z=Math.sin(a)*r;if(z>5&&Math.abs(x)<2)continue;const rock=mesh(new THREE.DodecahedronGeometry(.25+rand()*.36,0),rockMat,x,height(r)+.1,z);rock.scale.y=.55;}
+
+  const baseY=4.0;
+  // Castle terrace and perimeter walls.
+  box(10.5,.45,10.5,stoneDark,0,baseY+.12,0);
+  box(10.1,.3,10.1,stoneLight,0,baseY+.48,0);
+  const wallY=baseY+2.15, wallH=3.2;
+  box(9.1,wallH,.65,stone,0,wallY,-4.25);
+  box(.65,wallH,9.1,stone,-4.25,wallY,0);
+  box(.65,wallH,9.1,stone,4.25,wallY,0);
+  box(3.45,wallH,.65,stone,-2.82,wallY,4.25);
+  box(3.45,wallH,.65,stone,2.82,wallY,4.25);
+  // Gatehouse has a recessed arched doorway and timber gate.
+  box(2.45,4.1,1.1,stoneLight,0,baseY+2.6,4.32);
+  const arch=new THREE.Shape(); arch.moveTo(-.69,0);arch.lineTo(.69,0);arch.lineTo(.69,1.55);arch.absarc(0,1.55,.69,0,Math.PI,false);arch.lineTo(-.69,0);
+  const door=mesh(new THREE.ShapeGeometry(arch),wood,0,baseY+.62,4.89); door.castShadow=false;
+  for(let i=-2;i<=2;i++) box(.025,1.52,.035,stoneDark,i*.23,baseY+1.38,4.92);
+  for(let i=0;i<2;i++) box(1.25,.07,.04,dark,0,baseY+.95+i*.65,4.93);
+  // Merlons around the walls.
+  for(let i=-3;i<=3;i++){const p=i*1.12;box(.57,.56,.74,stoneLight,p,baseY+4.05,-4.25);box(.74,.56,.57,stoneLight,-4.25,baseY+4.05,p);box(.74,.56,.57,stoneLight,4.25,baseY+4.05,p);if(Math.abs(p)>1.7)box(.57,.56,.74,stoneLight,p,baseY+4.05,4.25);}
+  for(let i=-1;i<=1;i++)box(.48,.55,1.15,stoneLight,i*.87,baseY+4.94,4.32);
+
+  function slit(x,y,z,rotation=0,parent=scene) { const s=box(.17,.65,.055,dark,x,y,z,parent);s.rotation.y=rotation; }
+  function tower(x,z) {
+    const y=baseY;
+    cylinder(1.25,1.35,5.2,stone,x,y+3.0,z,12);
+    cylinder(1.4,1.3,.28,stoneLight,x,y+5.62,z,12);
+    cylinder(1.32,1.32,.32,stoneDark,x,y+5.88,z,12);
+    for(let i=0;i<10;i++){const a=i*Math.PI*2/10;const merlon=box(.47,.56,.43,stoneLight,x+Math.sin(a)*1.18,y+6.22,z+Math.cos(a)*1.18);merlon.rotation.y=a;}
+    // Conical cap gives the four corner towers a recognizable silhouette.
+    cylinder(0,1.06,1.65,roof,x,y+6.62,z,12);
+    cylinder(.06,.06,.38,gold,x,y+7.55,z,8);
+    for(let i=0;i<4;i++){const a=i*Math.PI/2;slit(x+Math.sin(a)*1.255,y+3.55,z+Math.cos(a)*1.255,a);}
+  }
+  tower(-4.15,-4.15);tower(4.15,-4.15);tower(-4.15,4.15);tower(4.15,4.15);
+
+  // The tall central keep rises above the curtain wall.
+  box(4.4,6.8,4.1,stoneLight,0,baseY+4.0,-.55);
+  box(4.65,.25,4.35,stoneDark,0,baseY+7.48,-.55);
+  box(4.75,.32,4.45,stone,0,baseY+7.72,-.55);
+  for(let i=-2;i<=2;i++){box(.55,.65,.5,stoneLight,i*.94,baseY+8.2,1.43);box(.55,.65,.5,stoneLight,i*.94,baseY+8.2,-2.53);}
+  for(let i=-1;i<=1;i++){box(.5,.65,.55,stoneLight,-2.15,baseY+8.2,-.55+i*1.18);box(.5,.65,.55,stoneLight,2.15,baseY+8.2,-.55+i*1.18);}
+  for(let i=-1;i<=1;i++){slit(i*1.15,baseY+5.6,1.51);slit(i*1.15,baseY+5.6,-2.61,Math.PI);}
+  for(let i=-1;i<=1;i++){slit(-2.22,baseY+5.6,-.55+i*1.05,-Math.PI/2);slit(2.22,baseY+5.6,-.55+i*1.05,Math.PI/2);}
+  // A few subtle stone blocks break up the broad walls.
+  for(let i=0;i<70;i++){let x=(rand()-.5)*4, y=baseY+1+rand()*6, z=1.51;const b=box(.22+rand()*.35,.07,.025,i%3?stone:stoneDark,x,y,z);b.castShadow=false;}
+
+  // Flag geometry is deformed every frame, anchored to its pole at the left edge.
+  const poleX=.1,poleZ=-.55,poleBase=baseY+7.85;
+  cylinder(.045,.055,3.6,wood,poleX,poleBase+1.8,poleZ,8);
+  mesh(new THREE.SphereGeometry(.11,8,6),gold,poleX,poleBase+3.64,poleZ);
+  const flagGeo=new THREE.PlaneGeometry(2.15,1.08,24,10); flagGeo.translate(1.075,0,0);
+  const flag=mesh(flagGeo,material(0xa9473d,{side:THREE.DoubleSide,roughness:.85}),poleX,poleBase+2.92,poleZ);
+  const flagOriginal=flagGeo.attributes.position.array.slice();
+  // A small gold diamond marks the banner.
+  const emblem=mesh(new THREE.PlaneGeometry(.28,.28),material(0xe4c27c,{side:THREE.DoubleSide}),1.05,0,.015,flag); emblem.rotation.z=Math.PI/4;
+
+  // Distant soft clouds add depth without competing with the castle.
+  const cloudMat=material(0xe8eee3,{transparent:true,opacity:.65,depthWrite:false});
+  for(let c=0;c<7;c++){const a=c/7*Math.PI*2, r=28+rand()*5, group=new THREE.Group();group.position.set(Math.cos(a)*r,10+rand()*8,Math.sin(a)*r);scene.add(group);for(let j=0;j<4;j++){const puff=mesh(new THREE.SphereGeometry(1,8,6),cloudMat,(j-1.5)*1.05,rand()*.3,0,group);puff.scale.set(1.3,.45,.55);puff.castShadow=false;puff.receiveShadow=false;}}
+
+  const clock=new THREE.Clock();
+  function animate(){
+    requestAnimationFrame(animate);
+    const t=clock.getElapsedTime(), angle=.7+t*.065;
+    const portrait=innerWidth/innerHeight<.8;
+    const distance=portrait?57:45;
+    camera.position.set(Math.sin(angle)*distance, portrait?29:25, Math.cos(angle)*distance);
+    camera.lookAt(0,4.5,0);
+    const p=flagGeo.attributes.position;
+    for(let i=0;i<p.count;i++){const x=flagOriginal[i*3], y=flagOriginal[i*3+1];p.setZ(i,Math.sin(x*3.4-t*4+y*1.5)*.23*(x/2.15)+Math.sin(x*6-t*5)*.05*(x/2.15));}
+    p.needsUpdate=true; flagGeo.computeVertexNormals();
+    emblem.position.z=Math.sin(1.05*3.4-t*4)*.23*(1.05/2.15)+.025;
+    renderer.render(scene,camera);
+  }
+  addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+  animate();
+})();
+</script>
+</body>
+</html>
