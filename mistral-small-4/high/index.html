@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medieval Castle Animation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a2e; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    <script>
+        // Main scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Sky blue
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(40, 25, 40);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Orbit light and camera automatically
+        let orbitAngle = 0;
+        const orbitRadius = 40;
+
+        // Lighting for medieval mood
+        const ambientLight = new THREE.AmbientLight(0x4a4a4a);
+        scene.add(ambientLight);
+
+        const sunLight = new THREE.DirectionalLight(0xfffff0, 1);
+        sunLight.position.set(-10, 30, 20);
+        sunLight.castShadow = true;
+        sunLight.shadow.mapSize.width = 2048;
+        sunLight.shadow.mapSize.height = 2048;
+        scene.add(sunLight);
+
+        // Ground / hill
+        const groundGeometry = new THREE.CylinderGeometry(30, 45, 10, 64);
+        const groundMaterial = new THREE.MeshStandardMaterial({
+            color: 0x3a5f0b,
+            roughness: 0.8,
+            metalness: 0.1
+        });
+        const hill = new THREE.Mesh(groundGeometry, groundMaterial);
+        hill.rotation.x = -Math.PI / 2;
+        hill.receiveShadow = true;
+        scene.add(hill);
+
+        // Forest around hill base
+        const treeCount = 120;
+        const treeGeometry = new THREE.ConeGeometry(0.3, 1.5, 8);
+        treeGeometry.translate(0, 0.75, 0);
+        const treeMaterial = new THREE.MeshStandardMaterial({ color: 0x1a4d1a });
+        for (let i = 0; i < treeCount; i++) {
+            const t = i / treeCount * Math.PI * 2;
+            const r = 25 + Math.random() * 25;
+            const px = Math.cos(t) * r;
+            const pz = Math.sin(t) * r;
+            const tree = new THREE.Mesh(treeGeometry, treeMaterial);
+            tree.position.set(px, 0, pz);
+            tree.rotation.y = Math.random() * Math.PI * 2;
+            tree.scale.setScalar(0.5 + Math.random() * 1.2);
+            tree.receiveShadow = true;
+            tree.castShadow = true;
+            scene.add(tree);
+        }
+
+        // Castle walls (rectangular base)
+        const wallHeight = 8;
+        const wallThickness = 2;
+        const wallOuter = new THREE.Mesh(
+            new THREE.BoxGeometry(24, wallHeight, 1.5),
+            new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.7 })
+        );
+        wallOuter.position.set(0, wallHeight/2, 11);
+        wallOuter.receiveShadow = true;
+        wallOuter.castShadow = true;
+        scene.add(wallOuter);
+
+        const wallInner = new THREE.Mesh(
+            new THREE.BoxGeometry(24, wallHeight, 1.5),
+            new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.7 })
+        );
+        wallInner.position.set(0, wallHeight/2, -11);
+        wallInner.receiveShadow = true;
+        wallInner.castShadow = true;
+        scene.add(wallInner);
+
+        const wallFront = new THREE.Mesh(
+            new THREE.BoxGeometry(1.5, wallHeight, 20),
+            new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.7 })
+        );
+        wallFront.position.set(11, wallHeight/2, 0);
+        wallFront.receiveShadow = true;
+        wallFront.castShadow = true;
+        scene.add(wallFront);
+
+        const wallBack = new THREE.Mesh(
+            new THREE.BoxGeometry(1.5, wallHeight, 20),
+            new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.7 })
+        );
+        wallBack.position.set(-11, wallHeight/2, 0);
+        wallBack.receiveShadow = true;
+        wallBack.castShadow = true;
+        scene.add(wallBack);
+
+        // Turrets at corners
+        const turretGeometry = new THREE.CylinderGeometry(1.2, 1.2, 14, 16);
+        turretGeometry.translate(0, 7, 0);
+        const turretMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x654321,
+            roughness: 0.6 
+        });
+
+        const turret1 = new THREE.Mesh(turretGeometry, turretMaterial);
+        turret1.position.set(-10, 0, -9);
+        turret1.receiveShadow = true;
+        turret1.castShadow = true;
+        scene.add(turret1);
+
+        const turret2 = new THREE.Mesh(turretGeometry, turretMaterial);
+        turret2.position.set(10, 0, -9);
+        turret2.receiveShadow = true;
+        turret2.castShadow = true;
+        scene.add(turret2);
+
+        const turret3 = new THREE.Mesh(turretGeometry, turretMaterial);
+        turret3.position.set(10, 0, 9);
+        turret3.receiveShadow = true;
+        turret3.castShadow = true;
+        scene.add(turret3);
+
+        const turret4 = new THREE.Mesh(turretGeometry, turretMaterial);
+        turret4.position.set(-10, 0, 9);
+        turret4.receiveShadow = true;
+        turret4.castShadow = true;
+        scene.add(turret4);
+
+        // Main central tower
+        const towerGeometry = new THREE.CylinderGeometry(2.5, 2.5, 20, 32);
+        towerGeometry.translate(0, 10, 0);
+        const towerTopGeometry = new THREE.ConeGeometry(3.5, 5, 32);
+        towerTopGeometry.translate(0, 22.5, 0);
+        const towerRoofGeometry = new THREE.ConeGeometry(4, 5, 32);
+        towerRoofGeometry.translate(0, 30, 0);
+
+        const towerMaterial = new THREE.MeshStandardMaterial({ color: 0x654321, roughness: 0.6 });
+        const roofMaterial = new THREE.MeshStandardMaterial({ color: 0x8B0000, roughness: 0.4 });
+
+        const mainTower = new THREE.Mesh(towerGeometry, towerMaterial);
+        mainTower.position.set(0, 0, 0);
+        mainTower.receiveShadow = true;
+        mainTower.castShadow = true;
+        scene.add(mainTower);
+
+        const towerTop = new THREE.Mesh(towerTopGeometry, towerMaterial);
+        towerTop.receiveShadow = true;
+        towerTop.castShadow = true;
+        scene.add(towerTop);
+
+        const towerRoof = new THREE.Mesh(towerRoofGeometry, roofMaterial);
+        towerRoof.receiveShadow = true;
+        towerRoof.castShadow = true;
+        scene.add(towerRoof);
+
+        // Battlements around tower top
+        const battlementCount = 16;
+        const battlementWidth = Math.PI * 2 * 2.5 / battlementCount;
+        for (let i = 0; i < battlementCount; i++) {
+            const angle = (i / battlementCount) * Math.PI * 2;
+            const px = Math.cos(angle) * 2.5;
+            const pz = Math.sin(angle) * 2.5;
+
+            const battlement = new THREE.Mesh(
+                new THREE.BoxGeometry(battlementWidth - 0.3, 1.5, 0.8),
+                new THREE.MeshStandardMaterial({ color: 0x7a5230 })
+            );
+
+            battlement.position.set(px, 22.5 + 0.75, pz);
+            battlement.rotation.y = angle + Math.PI/2;
+            battlement.receiveShadow = true;
+            battlement.castShadow = true;
+            scene.add(battlement);
+        }
+
+        // Flag waving animation
+        const flagGeometry = new THREE.PlaneGeometry(2.8, 2.0);
+        const flagShaderMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                time: { value: 0 },
+                windStrength: { value: 1.5 }
+            },
+            vertexShader: `
+                uniform float time;
+                uniform float windStrength;
+                varying vec2 vUv;
+
+                void main() {
+                    vUv = uv;
+                    vec3 pos = position;
+
+                    // Wave the flag with gentle wind
+                    float wave = sin(pos.x * 4.0 + time * 2.5) * 0.1 * windStrength;
+                    float wave2 = sin(pos.y * 2.0 + time * 1.8 + pos.x * 1.0) * 0.05 * windStrength;
+                    pos.z += wave + wave2;
+
+                    // Make waves propagate slowly
+                    vec3 animatedPos = pos;
+                    animatedPos.x += pos.y * 0.02 * windStrength * sin(time + pos.y);
+
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(animatedPos, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform float time;
+                varying vec2 vUv;
+
+                void main() {
+                    // Medieval red flag with white cross emblem
+                    vec3 col;
+                    if (vUv.y < 0.45) {
+                        col = vec3(0.75, 0.2, 0.2); // Main flag (dark red)
+                    } else {
+                        col = vec3(0.9, 0.3, 0.3);  // Gradual lighter red
+                    }
+
+                    // Simple emblem (cross)
+                    float emblem = smoothstep(0.55, 0.7, abs(vUv.x - 0.5) * 2.0) * 0.8;
+                    emblem *= smoothstep(0.55, 0.7, abs(vUv.y - 0.55) * 1.8);
+
+                    // White cross emblem
+                    col = mix(col, vec3(0.98, 0.98, 0.98), emblem);
+
+                    gl_FragColor = vec4(col, 1.0);
+                }
+            `,
+            side: THREE.DoubleSide
+        });
+
+        const flag = new THREE.Mesh(flagGeometry, flagShaderMaterial);
+        flag.rotation.y = Math.PI / 2;
+        flag.position.set(0, 27.8, 0);
+        flag.receiveShadow = true;
+        flag.castShadow = true;
+        scene.add(flag);
+
+        // Flag pole (slim cylinder)
+        const poleGeometry = new THREE.CylinderGeometry(0.1, 0.1, 6, 8);
+        const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x7a7a7a });
+        const pole = new THREE.Mesh(poleGeometry, poleMaterial);
+        pole.position.set(0, 24.5, 0);
+        pole.receiveShadow = true;
+        pole.castShadow = true;
+        scene.add(pole);
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Update flag shader time based on wind
+            flagShaderMaterial.uniforms.time.value += 0.016;
+
+            // Auto-rotation of camera around castle
+            orbitAngle += 0.003;
+            const camX = Math.cos(orbitAngle) * orbitRadius;
+            const camZ = Math.sin(orbitAngle) * orbitRadius;
+            camera.position.set(camX, 30, camZ);
+            camera.lookAt(0, 12, 0);
+
+            // Render
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>
