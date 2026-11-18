@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Castle on the Hill</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1220; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #msg { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+         color: #dde; font: 16px/1.5 system-ui, sans-serif; text-align: center; padding: 2em; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="msg"></div>
+<script>
+'use strict';
+(function () {
+
+// ---------------------------------------------------------------- constants
+const LOOP_SECONDS = 60;          // one full camera orbit; everything loops with this period
+const HILL_H = 30;                // height of the castle plateau
+const B = HILL_H;                 // castle base level
+const SUN = norm([0.62, 0.46, 0.40]);
+const WIND = norm([0.9, 0, 0.44]);
+
+// ---------------------------------------------------------------- math
+function norm(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function sstep(a, b, x) { let t = (x - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function mix3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+
+function perspective(fovy, aspect, n, f) {
+  const t = 1 / Math.tan(fovy / 2);
+  return [t / aspect, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) / (n - f), -1, 0, 0, 2 * f * n / (n - f), 0];
+}
+function ortho(l, r, b, t, n, f) {
+  return [2 / (r - l), 0, 0, 0, 0, 2 / (t - b), 0, 0, 0, 0, -2 / (f - n), 0,
+          -(r + l) / (r - l), -(t + b) / (t - b), -(f + n) / (f - n), 1];
+}
+function lookAt(e, t, up) {
+  const f = norm([t[0] - e[0], t[1] - e[1], t[2] - e[2]]);
+  const s = norm(cross(f, up));
+  const u = cross(s, f);
+  return { m: [s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0,
+               -dot(s, e), -dot(u, e), dot(f, e), 1], f, s, u };
+}
+function mul(a, b) {
+  const o = new Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    let v = 0; for (let k = 0; k < 4; k++) v += a[k * 4 + r] * b[c * 4 + k];
+    o[c * 4 + r] = v;
+  }
+  return o;
+}
+
+// ---------------------------------------------------------------- deterministic random + noise
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(1337);
+function hash2(i, j) {
+  let n = Math.imul(i, 374761393) + Math.imul(j, 668265263) | 0;
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  let fx = x - xi, fy = y - yi;
+  fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+}
+function fbm(x, y) {
+  let v = 0, a = 0.5, s = 0;
+  for (let o = 0; o < 4; o++) { v += a * vnoise(x, y); s += a; a *= 0.5; x = x * 2.03 + 17.1; y = y * 2.03 + 9.7; }
+  return v / s;
+}
+
+// ---------------------------------------------------------------- terrain functions
+function height(x, z) {
+  const r = Math.hypot(x, z);
+  let h = HILL_H * (1 - sstep(27, 82, r));
+  h += sstep(27, 110, r) * (fbm(x * 0.012 + 5, z * 0.012 + 9) - 0.5) * 22;
+  h += sstep(27, 45, r) * (fbm(x * 0.05, z * 0.05) - 0.5) * 3;
+  h += sstep(420, 900, r) * (30 + 190 * fbm(x * 0.004 + 3, z * 0.004 + 7));
+  return h;
+}
+function meadow(x, z) { return sstep(0.37, 0.30, fbm(x * 0.02 + 40, z * 0.02 + 11)); }
+function pathX(z) { return 7 * Math.sin((z - 18) * 0.05); }
+function terrainNormal(x, z) {
+  const e = 0.8;
+  return norm([height(x - e, z) - height(x + e, z), 2 * e, height(x, z - e) - height(x, z + e)]);
+}
+function terrainColor(x, z, h, ny) {
+  const r = Math.hypot(x, z);
+  let c = [0.10, 0.17, 0.06];
+  const hillMix = 1 - sstep(62, 96, r);
+  c = mix3(c, [0.30, 0.42, 0.13], Math.max(hillMix, meadow(x, z)));
+  const slope = 1 - ny + (vnoise(x * 0.23, z * 0.23) - 0.5) * 0.10;
+  c = mix3(c, [0.47, 0.45, 0.41], sstep(0.13, 0.24, slope) * hillMix * 0.85);
+  c = mix3(c, [0.45, 0.38, 0.27], (1 - sstep(16, 23, r)) * 0.85);
+  c = mix3(c, [0.15, 0.21, 0.13], sstep(480, 800, r));
+  c = mix3(c, [0.50, 0.50, 0.53], sstep(110, 190, h + (vnoise(x * 0.02, z * 0.02) - 0.5) * 50));
+  return c;
+}
+
+// ---------------------------------------------------------------- mesh builder
+// vertex: pos(3) normal(3) color(3) uv(2) material(1)
+// materials: 0 plain, 1 stone, 2 foliage, 3 flag, 4 emissive, 5 terrain, 6 roof
+class Mesh {
+  constructor() { this.v = []; this.i = []; this.n = 0; }
+  vert(p, n, c, u, v, m) { this.v.push(p[0], p[1], p[2], n[0], n[1], n[2], c[0], c[1], c[2], u, v, m); return this.n++; }
+  quad(a, b, c, d) { this.i.push(a, b, c, a, c, d); }
+  tri(a, b, c) { this.i.push(a, b, c); }
+}
+const FACES = [
+  [[1, 0, 0], [0, 0, 1], [0, 1, 0]], [[-1, 0, 0], [0, 0, 1], [0, 1, 0]],
+  [[0, 0, 1], [1, 0, 0], [0, 1, 0]], [[0, 0, -1], [1, 0, 0], [0, 1, 0]],
+  [[0, 1, 0], [1, 0, 0], [0, 0, 1]]
+];
+const CORNERS = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+// box centred on (cx,cy,cz); rot rotates around Y (local x -> (cos,-sin))
+function box(m, cx, cy, cz, sx, sy, sz, col, mat, rot) {
+  rot = rot || 0;
+  const h = [sx / 2, sy / 2, sz / 2], c = Math.cos(rot), s = Math.sin(rot);
+  const uo = (cx * 0.71 + cz * 1.37) % 7;
+  for (const [n, t, b] of FACES) {
+    const ids = [];
+    for (const [a, bb] of CORNERS) {
+      const l = [0, 1, 2].map(k => (n[k] + t[k] * a + b[k] * bb) * h[k]);
+      const p = [cx + l[0] * c + l[2] * s, cy + l[1], cz - l[0] * s + l[2] * c];
+      const nn = [n[0] * c + n[2] * s, n[1], -n[0] * s + n[2] * c];
+      const u = t[0] * l[0] + t[2] * l[2] + uo;
+      const v = n[1] ? l[2] : p[1];
+      ids.push(m.vert(p, nn, col, u, v, mat));
+    }
+    m.quad(ids[0], ids[1], ids[2], ids[3]);
+  }
+}
+// vertical (truncated) cone / cylinder
+function cyl(m, cx, y0, cz, r0, r1, h, segs, col, mat, capTop, col2) {
+  const base = m.n, slope = r0 - r1, rr = Math.max(r0, r1);
+  for (let i = 0; i <= segs; i++) {
+    const a = i / segs * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+    const n = norm([ca * h, slope, sa * h]);
+    m.vert([cx + ca * r0, y0, cz + sa * r0], n, col, a * rr, y0, mat);
+    m.vert([cx + ca * r1, y0 + h, cz + sa * r1], n, col2 || col, a * rr, y0 + h, mat);
+  }
+  for (let i = 0; i < segs; i++) { const k = base + i * 2; m.quad(k, k + 2, k + 3, k + 1); }
+  if (capTop && r1 > 0) {
+    const cb = m.n;
+    m.vert([cx, y0 + h, cz], [0, 1, 0], col, cx, cz, mat);
+    for (let i = 0; i <= segs; i++) {
+      const a = i / segs * Math.PI * 2;
+      m.vert([cx + Math.cos(a) * r1, y0 + h, cz + Math.sin(a) * r1], [0, 1, 0], col, cx + Math.cos(a) * r1, cz + Math.sin(a) * r1, mat);
+    }
+    for (let i = 0; i < segs; i++) m.tri(cb, cb + 1 + i, cb + 2 + i);
+  }
+}
+function sphere(m, cx, cy, cz, rx, ry, rz, segs, rings, col, mat, colTop) {
+  const base = m.n;
+  for (let j = 0; j <= rings; j++) {
+    const ph = j / rings * Math.PI, sp = Math.sin(ph), cp = Math.cos(ph);
+    const cc = colTop ? mix3(col, colTop, 1 - j / rings) : col;
+    for (let i = 0; i <= segs; i++) {
+      const a = i / segs * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+      const n = norm([ca * sp / rx, cp / ry, sa * sp / rz]);
+      m.vert([cx + ca * sp * rx, cy + cp * ry, cz + sa * sp * rz], n, cc, a, ph, mat);
+    }
+  }
+  for (let j = 0; j < rings; j++) for (let i = 0; i < segs; i++) {
+    const k = base + j * (segs + 1) + i;
+    m.quad(k, k + 1, k + segs + 2, k + segs + 1);
+  }
+}
+// gabled roof: base rectangle sx*sz at height y, ridge height h, ridge along x (or z)
+function gable(m, cx, y, cz, sx, sz, h, roofCol, wallCol, alongZ) {
+  const a = (alongZ ? sz : sx) / 2, b = (alongZ ? sx : sz) / 2;
+  const P = (lx, ly, lz) => alongZ ? [cx + lz, y + ly, cz + lx] : [cx + lx, y + ly, cz + lz];
+  const N = (lx, ly, lz) => norm(alongZ ? [lz, ly, lx] : [lx, ly, lz]);
+  const len = Math.hypot(b, h);
+  for (const sgn of [-1, 1]) {
+    const n = N(0, b, sgn * h);
+    const i0 = m.vert(P(-a, 0, sgn * b), n, roofCol, -a, 0, 6);
+    const i1 = m.vert(P(a, 0, sgn * b), n, roofCol, a, 0, 6);
+    const i2 = m.vert(P(a, h, 0), n, roofCol, a, len, 6);
+    const i3 = m.vert(P(-a, h, 0), n, roofCol, -a, len, 6);
+    m.quad(i0, i1, i2, i3);
+    const ne = N(sgn, 0, 0), ov = 0.35;   // gable end walls, slightly inset
+    const e0 = m.vert(P(sgn * (a - ov), 0, -b + ov), ne, wallCol, -b, y, 1);
+    const e1 = m.vert(P(sgn * (a - ov), 0, b - ov), ne, wallCol, b, y, 1);
+    const e2 = m.vert(P(sgn * (a - ov), h * (1 - ov / b), 0), ne, wallCol, 0, y + h, 1);
+    m.tri(e0, e1, e2);
+  }
+}
+
+// ---------------------------------------------------------------- castle
+const STONE = [0.64, 0.61, 0.55], STONE_D = [0.52, 0.50, 0.46], STONE_L = [0.70, 0.67, 0.60];
+const ROOF = [0.50, 0.21, 0.14], ROOF_D = [0.36, 0.17, 0.13];
+const DARK = [0.035, 0.03, 0.03], WOOD = [0.23, 0.14, 0.08], LIT = [1.0, 0.72, 0.30];
+
+function merlonRow(m, x0, z0, x1, z1, y, col) {
+  const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz);
+  const n = Math.max(1, Math.round(len / 1.7)), rot = Math.atan2(-dz, dx);
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n;
+    box(m, x0 + dx * t, y + 0.5, z0 + dz * t, len / n * 0.55, 1.0, 0.5, col, 1, rot);
+  }
+}
+function merlonRing(m, cx, cz, R, y, n, col) {
+  for (let i = 0; i < n; i++) {
+    const a = (i + 0.5) / n * Math.PI * 2;
+    box(m, cx + Math.cos(a) * R, y + 0.5, cz + Math.sin(a) * R, 2 * Math.PI * R / n * 0.55, 1.0, 0.5, col, 1, Math.PI / 2 - a);
+  }
+}
+function slit(m, cx, cz, r, a, y, w, h, lit) {
+  box(m, cx + Math.cos(a) * r, y, cz + Math.sin(a) * r, w, h, 0.16, lit ? LIT : DARK, lit ? 4 : 0, Math.PI / 2 - a);
+}
+function roundTower(m, cx, cz, r, top, opts) {
+  const o = opts || {};
+  cyl(m, cx, B - 4, cz, r * 1.12, r, 5, 20, STONE_D, 1, false, STONE);       // battered base
+  cyl(m, cx, B + 1, cz, r, r, top - 1.8 - (B + 1), 20, STONE, 1);
+  cyl(m, cx, top - 1.8, cz, r, r + 0.45, 0.8, 20, STONE_D, 1);                // corbel flare
+  cyl(m, cx, top - 1.0, cz, r + 0.45, r + 0.45, 1.0, 20, STONE_L, 1, true);
+  if (o.overhangRoof) {
+    cyl(m, cx, top, cz, r + 0.9, 0, o.roofH, 20, ROOF_D, 6, false, ROOF);
+  } else {
+    merlonRing(m, cx, cz, r + 0.2, top, o.merlons || 10, STONE_L);
+    const ir = r - 0.75;
+    cyl(m, cx, top, cz, ir, ir, 2.0, 16, STONE, 1);
+    cyl(m, cx, top + 2.0, cz, ir + 0.55, 0, o.roofH, 20, ROOF_D, 6, false, ROOF);
+  }
+}
+
+function buildStatic() {
+  const m = new Mesh();
+
+  // ---- terrain (polar grid: dense near the hill, coarse far away)
+  const radii = [0];
+  while (radii[radii.length - 1] < 120) radii.push(radii[radii.length - 1] + 1.5);
+  while (radii[radii.length - 1] < 1150) radii.push(radii[radii.length - 1] * 1.05);
+  const SEG = 256, tb = m.n;
+  for (let j = 0; j < radii.length; j++) {
+    for (let i = 0; i <= SEG; i++) {
+      const a = i / SEG * Math.PI * 2, x = Math.cos(a) * radii[j], z = Math.sin(a) * radii[j];
+      const h = height(x, z), n = terrainNormal(x, z);
+      m.vert([x, h, z], n, terrainColor(x, z, h, n[1]), x, z, 5);
+    }
+  }
+  for (let j = 0; j < radii.length - 1; j++) for (let i = 0; i < SEG; i++) {
+    const k = tb + j * (SEG + 1) + i;
+    m.quad(k, k + 1, k + SEG + 2, k + SEG + 1);
+  }
+
+  // ---- rocks on the hillside
+  for (let i = 0; i < 70; i++) {
+    const a = rnd() * 6.283, r = 30 + rnd() * 60, x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if (z > 15 && Math.abs(x - pathX(z)) < 3.5) continue;
+    const s = 0.6 + rnd() * 1.6, g = 0.36 + rnd() * 0.14;
+    sphere(m, x, height(x, z) + s * 0.15, z, s * (0.8 + rnd() * 0.6), s * (0.5 + rnd() * 0.4), s * (0.8 + rnd() * 0.6), 6, 4, [g, g * 0.97, g * 0.9], 0);
+  }
+
+  // ---- curtain walls
+  const W = 15, WT = B + 7;
+  for (const s of [-1, 1]) {
+    box(m, 0, B + 1.5, s * W, 2 * W, 11, 1.7, STONE, 1);
+    box(m, s * W, B + 1.5, 0, 1.7, 11, 2 * W, STONE, 1);
+    merlonRow(m, -W + 3.4, s * (W + 0.6), W - 3.4, s * (W + 0.6), WT, STONE_L);
+    merlonRow(m, s * (W + 0.6), -W + 3.4, s * (W + 0.6), W - 3.4, WT, STONE_L);
+    // low inner parapet
+    box(m, 0, WT + 0.2, s * (W - 0.7), 2 * W - 6, 0.4, 0.3, STONE_D, 1);
+    box(m, s * (W - 0.7), WT + 0.2, 0, 0.3, 0.4, 2 * W - 6, STONE_D, 1);
+  }
+  // ---- corner towers
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const cx = sx * W, cz = sz * W;
+    roundTower(m, cx, cz, 3.0, B + 12.5, { roofH: 5.5, merlons: 10 });
+    const a = Math.atan2(sz, sx);
+    slit(m, cx, cz, 3.0, a, B + 7.5, 0.35, 1.5, false);
+    slit(m, cx, cz, 3.0, a + 0.9, B + 4.5, 0.35, 1.5, false);
+    slit(m, cx, cz, 3.0, a - 0.9, B + 9.5, 0.35, 1.3, sx * sz > 0);
+  }
+
+  // ---- gatehouse (south side, +z)
+  const GZ = W + 0.6;
+  box(m, 0, B + 3.5, GZ, 8, 15, 5.2, STONE, 1);
+  box(m, 0, B + 10.6, GZ, 8.7, 0.9, 5.9, STONE_D, 1);
+  merlonRow(m, -4.1, GZ + 2.7, 4.1, GZ + 2.7, B + 11.05, STONE_L);
+  merlonRow(m, -4.1, GZ - 2.7, 4.1, GZ - 2.7, B + 11.05, STONE_L);
+  merlonRow(m, -4.1, GZ - 2.0, -4.1, GZ + 2.0, B + 11.05, STONE_L);
+  merlonRow(m, 4.1, GZ - 2.0, 4.1, GZ + 2.0, B + 11.05, STONE_L);
+  for (const s of [-1, 1]) {
+    const fz = GZ + s * 2.6;                 // arched gateway, both faces
+    box(m, 0, B + 1.5, fz, 3.4, 3.6, 0.2, s > 0 ? WOOD : DARK, 0);
+    box(m, 0, B + 3.5, fz, 2.9, 0.5, 0.2, s > 0 ? WOOD : DARK, 0);
+    box(m, 0, B + 3.95, fz, 2.0, 0.4, 0.2, s > 0 ? WOOD : DARK, 0);
+    box(m, 0, B + 1.5, fz + s * 0.02, 0.12, 3.6, 0.22, DARK, 0);
+    box(m, -1.3, B + 7.6, fz, 0.6, 1.4, 0.16, LIT, 4);
+    box(m, 1.3, B + 7.6, fz, 0.6, 1.4, 0.16, s > 0 ? DARK : LIT, s > 0 ? 0 : 4);
+  }
+  for (const s of [-1, 1]) {
+    roundTower(m, s * 4.3, GZ + 2.4, 1.7, B + 12.5, { overhangRoof: true, roofH: 4.6 });
+    slit(m, s * 4.3, GZ + 2.4, 1.7, Math.PI / 2 - s * 0.5, B + 8, 0.3, 1.3, false);
+  }
+
+  // ---- keep
+  const KX = -2.5, KZ = -3, KS = 11, KT = B + 17;
+  box(m, KX, B + 6, KZ, KS, 20, KS, STONE, 1);
+  box(m, KX, B - 1.5, KZ, KS + 0.8, 5, KS + 0.8, STONE_D, 1);
+  box(m, KX, KT - 0.1, KZ, KS + 0.9, 1.3, KS + 0.9, STONE_D, 1);
+  const kh = KS / 2 + 0.2;
+  for (const s of [-1, 1]) {
+    merlonRow(m, KX - kh, KZ + s * kh, KX + kh, KZ + s * kh, KT + 0.55, STONE_L);
+    merlonRow(m, KX + s * kh, KZ - kh + 0.6, KX + s * kh, KZ + kh - 0.6, KT + 0.55, STONE_L);
+  }
+  // roof structure inside the keep battlements
+  box(m, KX, KT + 1.1, KZ, 7, 1.2, 7, STONE, 1);
+  gable(m, KX, KT + 1.7, KZ, 8, 8, 3.4, ROOF, STONE, false);
+  // keep windows
+  let wi = 0;
+  for (const lvl of [B + 6, B + 11.5]) for (const off of [-2.6, 2.6]) for (const s of [-1, 1]) {
+    const l1 = (wi++ * 7) % 5 < 2, l2 = (wi++ * 7) % 5 < 2;
+    box(m, KX + off, lvl, KZ + s * KS / 2, 0.75, 1.7, 0.16, l1 ? LIT : DARK, l1 ? 4 : 0);
+    box(m, KX + off, lvl - 1.0, KZ + s * (KS / 2 + 0.05), 1.1, 0.2, 0.3, STONE_L, 1);
+    box(m, KX + s * KS / 2, lvl, KZ + off, 0.16, 1.7, 0.75, l2 ? LIT : DARK, l2 ? 4 : 0);
+    box(m, KX + s * (KS / 2 + 0.05), lvl - 1.0, KZ + off, 0.3, 0.2, 1.1, STONE_L, 1);
+  }
+  box(m, KX + 2, B + 1.4, KZ + KS / 2 + 0.4, 1.8, 2.9, 0.2, WOOD, 0);            // keep door
+  box(m, KX + 2, B - 0.2, KZ + KS / 2 + 1.3, 3, 0.5, 2, STONE_D, 1);
+
+  // ---- great tower (carries the flag)
+  const TX = KX - KS / 2, TZ = KZ - KS / 2, TTOP = B + 29;
+  roundTower(m, TX, TZ, 3.5, TTOP, { roofH: 7.5, merlons: 12 });
+  for (let i = 0; i < 9; i++) slit(m, TX, TZ, 3.5, 2.2 + i * 1.9, B + 5 + i * 2.5, 0.38, 1.5, i % 3 === 1);
+  const apex = TTOP + 2.0 + 7.5;
+  cyl(m, TX, apex - 0.9, TZ, 0.09, 0.07, 7.0, 8, [0.30, 0.22, 0.14], 0, true);
+  sphere(m, TX, apex + 6.2, TZ, 0.2, 0.2, 0.2, 8, 6, [0.95, 0.75, 0.2], 0);
+
+  // ---- great hall + stable + well
+  box(m, 8.6, B + 1.5, 2, 7, 9, 15, STONE_L, 1);
+  gable(m, 8.6, B + 6, 2, 7.8, 15.8, 3.6, ROOF, STONE_L, true);
+  box(m, 10, B + 8.4, -3, 1.0, 4.4, 1.0, STONE_D, 1);
+  for (const oz of [-3, 0.5, 4, 7.5])
+    box(m, 5.1, B + 3.2, oz, 0.16, 1.8, 0.8, oz === 0.5 ? DARK : LIT, oz === 0.5 ? 0 : 4);
+  box(m, 5.05, B + 1.2, -5.2, 0.2, 2.4, 1.4, WOOD, 0);
+  box(m, -8.5, B + 0.5, 10.3, 9, 5, 5, [0.42, 0.30, 0.19], 0);
+  gable(m, -8.5, B + 3, 10.3, 9.8, 5.8, 2.4, ROOF_D, [0.42, 0.30, 0.19], false);
+  box(m, -8.5, B + 1.0, 7.75, 2.2, 2.0, 0.16, DARK, 0);
+  cyl(m, 2.5, B - 0.5, 8.5, 1.0, 1.0, 1.4, 12, STONE_D, 1, false);
+  cyl(m, 2.5, B + 0.6, 8.5, 0.82, 0.82, 0.01, 12, DARK, 0, true);
+  box(m, 1.6, B + 1.8, 8.5, 0.14, 1.9, 0.14, WOOD, 0);
+  box(m, 3.4, B + 1.8, 8.5, 0.14, 1.9, 0.14, WOOD, 0);
+  gable(m, 2.5, B + 2.7, 8.5, 2.6, 1.8, 0.8, ROOF_D, WOOD, false);
+
+  return { m, flagPole: [TX, apex + 5.9, TZ] };
+}
+
+// ---------------------------------------------------------------- trees (instanced)
+function buildConifer() {
+  const m = new Mesh();
+  cyl(m, 0, 0, 0, 0.035, 0.025, 0.3, 5, [0.26, 0.17, 0.10], 0);
+  const d = [0.07, 0.19, 0.08], l = [0.16, 0.34, 0.12];
+  cyl(m, 0, 0.14, 0, 0.23, 0.0, 0.42, 7, d, 2, false, mix3(d, l, 0.5));
+  cyl(m, 0, 0.38, 0, 0.18, 0.0, 0.36, 7, mix3(d, l, 0.25), 2, false, mix3(d, l, 0.75));
+  cyl(m, 0, 0.62, 0, 0.12, 0.0, 0.38, 7, mix3(d, l, 0.5), 2, false, l);
+  return m;
+}
+function buildBroadleaf() {
+  const m = new Mesh();
+  cyl(m, 0, 0, 0, 0.05, 0.03, 0.5, 5, [0.28, 0.19, 0.11], 0);
+  const d = [0.10, 0.22, 0.05], l = [0.30, 0.46, 0.12];
+  sphere(m, 0.0, 0.62, 0.0, 0.30, 0.27, 0.30, 7, 4, d, 2, l);
+  sphere(m, 0.14, 0.80, 0.08, 0.20, 0.19, 0.20, 6, 3, mix3(d, l, 0.3), 2, l);
+  return m;
+}
+function buildForest() {
+  const con = [], bro = [];
+  const N = 19000;
+  for (let i = 0; i < N; i++) {
+    const r = 37 + (700 - 37) * Math.pow(rnd(), 0.7), a = rnd() * Math.PI * 2;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const p1 = rnd(), p2 = rnd(), p3 = rnd(), p4 = rnd(), p5 = rnd(), p6 = rnd();
+    if (r < 84 && p1 > Math.pow((r - 37) / 47, 1.6) * 0.9 + 0.03) continue;   // sparse on the hill
+    if (z > 15 && z < 140 && Math.abs(x - pathX(z)) < 3.2) continue;          // keep the road clear
+    if (meadow(x, z) > 0.4 && r > 84) continue;                               // forest clearings
+    const far = 1 + 0.45 * sstep(220, 600, r);
+    const g = 0.75 + 0.45 * p3;
+    const tint = [g * (0.85 + 0.35 * p4), g, g * (0.8 + 0.3 * p5)];
+    const y = height(x, z) - 0.25;
+    if (p2 < 0.78) con.push(x, y, z, (9 + 7 * p6) * far, tint[0], tint[1], tint[2], p1 * 6.283);
+    else bro.push(x, y, z, (7.5 + 4.5 * p6) * far, tint[0] * 1.05, tint[1], tint[2] * 0.9, p1 * 6.283);
+  }
+  return { con: new Float32Array(con), bro: new Float32Array(bro) };
+}
+
+// ---------------------------------------------------------------- flag (CPU animated cloth)
+const FU = 28, FV = 12, FLAG_L = 6.6, FLAG_H = 3.7;
+function makeFlag(pole) {
+  const nv = (FU + 1) * (FV + 1);
+  const data = new Float32Array(nv * 12), pos = new Float32Array(nv * 3), idx = [];
+  for (let i = 0; i < FU; i++) for (let j = 0; j < FV; j++) {
+    const k = i * (FV + 1) + j;
+    idx.push(k, k + FV + 1, k + FV + 2, k, k + FV + 2, k + 1);
+  }
+  const PX = -WIND[2], PZ = WIND[0];
+  function update(phase) {
+    for (let i = 0; i <= FU; i++) for (let j = 0; j <= FV; j++) {
+      const u = i / FU, v = j / FV, s = u * FLAG_L, k = (i * (FV + 1) + j) * 3;
+      const A = 0.55 * (1 - Math.exp(-3.2 * u));
+      const off = A * Math.sin(1.7 * s - 52 * phase + 1.1 * v)
+                + 0.38 * A * Math.sin(3.4 * s - 87 * phase - 2.2 * v + 1.0)
+                + 0.25 * u * Math.sin(7 * phase + 0.5);
+      const along = s * 0.93 - 0.10 * u * (1 + Math.sin(13 * phase));
+      const y = -v * FLAG_H - 0.45 * u * u + 0.14 * u * Math.sin(2.3 * s - 61 * phase + 2.5 * v)
+                + 0.10 * u * Math.sin(9 * phase);
+      pos[k] = pole[0] + WIND[0] * along + PX * off;
+      pos[k + 1] = pole[1] + y;
+      pos[k + 2] = pole[2] + WIND[2] * along + PZ * off;
+    }
+    for (let i = 0; i <= FU; i++) for (let j = 0; j <= FV; j++) {
+      const i0 = Math.max(i - 1, 0), i1 = Math.min(i + 1, FU), j0 = Math.max(j - 1, 0), j1 = Math.min(j + 1, FV);
+      const a = (i0 * (FV + 1) + j) * 3, b = (i1 * (FV + 1) + j) * 3, c = (i * (FV + 1) + j0) * 3, d = (i * (FV + 1) + j1) * 3;
+      const n = norm(cross([pos[b] - pos[a], pos[b + 1] - pos[a + 1], pos[b + 2] - pos[a + 2]],
+                           [pos[d] - pos[c], pos[d + 1] - pos[c + 1], pos[d + 2] - pos[c + 2]]));
+      const k = i * (FV + 1) + j, o = k * 12;
+      data[o] = pos[k * 3]; data[o + 1] = pos[k * 3 + 1]; data[o + 2] = pos[k * 3 + 2];
+      data[o + 3] = n[0]; data[o + 4] = n[1]; data[o + 5] = n[2];
+      data[o + 6] = 1; data[o + 7] = 1; data[o + 8] = 1;
+      data[o + 9] = i / FU; data[o + 10] = j / FV; data[o + 11] = 3;
+    }
+    return data;
+  }
+  return { data, idx: new Uint32Array(idx), update };
+}
+
+// ---------------------------------------------------------------- shaders
+const GLSL_COMMON = `
+uniform vec3 uSun;
+float hash21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
+float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+  return mix(mix(hash21(i),hash21(i+vec2(1,0)),f.x), mix(hash21(i+vec2(0,1)),hash21(i+vec2(1,1)),f.x), f.y); }
+float fbm(vec2 p){ float v=0., a=.5; for(int i=0;i<5;i++){ v+=a*vnoise(p); p=p*2.03+vec2(17.1,9.7); a*=.5; } return v; }
+vec3 skyBase(vec3 d){
+  float h = clamp(d.y, 0., 1.);
+  float sd = max(dot(normalize(vec3(d.x, max(d.y, 0.), d.z)), uSun), 0.);
+  vec3 hor = mix(vec3(0.62,0.74,0.90), vec3(1.05,0.84,0.62), pow(sd, 2.5));
+  vec3 c = mix(hor, vec3(0.10,0.27,0.64), pow(h, 0.55));
+  c += vec3(1.0,0.72,0.42) * pow(sd, 10.) * 0.35;
+  return c;
+}
+vec3 tonemap(vec3 c){ c = 1. - exp(-c*1.25); return pow(c, vec3(1./2.2)); }
+`;
+
+const VS_SCENE = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec3 aCol;
+layout(location=3) in vec3 aUvm;
+layout(location=4) in vec4 aInst;   // xyz offset, w scale
+layout(location=5) in vec4 aTint;   // rgb tint, w rotation
+uniform mat4 uVP;
+uniform float uPhase, uSway;
+out vec3 vN; out vec3 vCol; out vec3 vUvm; out vec3 vWorld;
+void main(){
+  float c = cos(aTint.w), s = sin(aTint.w);
+  vec3 p = vec3(aPos.x*c + aPos.z*s, aPos.y, -aPos.x*s + aPos.z*c) * aInst.w + aInst.xyz;
+  float k = uSway * aPos.y * aPos.y * aInst.w * 0.03;
+  p.x += k * sin(uPhase*37. + aInst.x*0.31 + aInst.z*0.17);
+  p.z += k * 0.6 * sin(uPhase*29. + aInst.x*0.13 - aInst.z*0.27);
+  vN = vec3(aNrm.x*c + aNrm.z*s, aNrm.y, -aNrm.x*s + aNrm.z*c);
+  vCol = aCol * aTint.rgb; vUvm = aUvm; vWorld = p;
+  gl_Position = uVP * vec4(p, 1.);
+}`;
+
+const FS_DEPTH = `#version 300 es
+precision mediump float;
+void main(){}`;
+
+const FS_SCENE = `#version 300 es
+precision highp float;
+precision highp sampler2DShadow;
+in vec3 vN; in vec3 vCol; in vec3 vUvm; in vec3 vWorld;
+uniform vec3 uEye;
+uniform mat4 uLightVP;
+uniform sampler2DShadow uShadow;
+uniform float uShadowTexel;
+out vec4 frag;
+${GLSL_COMMON}
+float shadow(vec3 wp, vec3 n){
+  float fade = smoothstep(120., 150., length(wp.xz));
+  if (fade >= 1.) return 1.;
+  vec4 lp = uLightVP * vec4(wp + n*0.22, 1.);
+  vec3 q = lp.xyz*0.5 + 0.5;
+  if (q.x<0.||q.x>1.||q.y<0.||q.y>1.||q.z>1.) return 1.;
+  q.z -= 0.0007;
+  float t = uShadowTexel*0.8, s = 0.;
+  s += texture(uShadow, vec3(q.xy + vec2(-t,-t), q.z));
+  s += texture(uShadow, vec3(q.xy + vec2( t,-t), q.z));
+  s += texture(uShadow, vec3(q.xy + vec2(-t, t), q.z));
+  s += texture(uShadow, vec3(q.xy + vec2( t, t), q.z));
+  return mix(s*0.25, 1., fade);
+}
+void main(){
+  int mat = int(vUvm.z + 0.5);
+  vec3 n = normalize(vN);
+  vec3 view = vWorld - uEye;
+  float dist = length(view);
+  vec3 V = view / dist;
+  vec3 alb = vCol;
+  float wrap = 0.;
+  if (mat == 1) {                     // stone blocks
+    vec2 q = vUvm.xy / vec2(1.8, 0.8);
+    float row = floor(q.y);
+    q.x += 0.5*mod(row, 2.);
+    vec2 id = floor(q), f = fract(q);
+    float edge = min(min(f.x, 1.-f.x)*1.8, min(f.y, 1.-f.y)*0.8);
+    float mortar = smoothstep(0.02, 0.10, edge);
+    float fade = clamp(1.3 - fwidth(q.y)*3.0, 0., 1.);
+    alb *= mix(0.93, mix(0.58, 1., mortar) * (0.80 + 0.40*hash21(id)), fade);
+    alb *= 0.80 + 0.35*fbm(vec2(vUvm.x, vWorld.y)*0.22 + vWorld.xz*0.05);
+    alb = mix(alb, alb*vec3(0.72,0.86,0.62), smoothstep(0.55,0.8, fbm(vWorld.xz*0.3+vWorld.y*0.21))*0.5);
+  } else if (mat == 2) {              // foliage
+    alb *= 0.78 + 0.45*vnoise(vWorld.xz*1.7 + vWorld.y*2.3);
+    wrap = 0.45;
+  } else if (mat == 3) {              // flag
+    vec2 uv = vUvm.xy;
+    alb = vec3(0.70, 0.05, 0.06);
+    float crossM = max(step(abs(uv.y-0.5), 0.085), step(abs(uv.x-0.36), 0.047));
+    alb = mix(alb, vec3(0.98, 0.76, 0.14), crossM);
+    float border = step(uv.x, 0.03) + step(0.975, uv.x) + step(uv.y, 0.05) + step(0.95, uv.y);
+    alb = mix(alb, vec3(0.98, 0.76, 0.14), clamp(border, 0., 1.));
+    alb *= 0.92 + 0.08*sin(uv.x*300.)*sin(uv.y*170.);
+    if (dot(n, V) > 0.) n = -n;
+    wrap = 0.5;
+  } else if (mat == 5) {              // terrain
+    float nz = fbm(vWorld.xz*0.35);
+    alb *= 0.75 + 0.5*nz;
+    alb *= 0.9 + 0.2*vnoise(vWorld.xz*3.1);
+    float px = 7.*sin((vWorld.z-18.)*0.05);
+    float w = 1.9 + 0.9*(nz-0.5);
+    float pm = smoothstep(w+0.7, w-0.2, abs(vWorld.x-px)) * step(16., vWorld.z) * smoothstep(150., 110., vWorld.z);
+    alb = mix(alb, vec3(0.50,0.42,0.30)*(0.8+0.4*vnoise(vWorld.xz*1.3)), pm*0.9);
+  } else if (mat == 6) {              // roof tiles
+    float r = fract(vUvm.y*2.4);
+    float cidx = floor(vUvm.x*2.2 + 0.5*floor(vUvm.y*2.4));
+    float fade = clamp(1.3 - fwidth(vUvm.y*2.4)*3.0, 0., 1.);
+    alb *= mix(0.86, (0.70 + 0.30*r) * (0.82 + 0.36*hash21(vec2(cidx, floor(vUvm.y*2.4)))), fade);
+  }
+  vec3 col;
+  if (mat == 4) {
+    col = alb * (1.6 + 0.5*vnoise(vWorld.xy*3.));
+  } else {
+    float ndl = clamp((dot(n, uSun) + wrap) / (1. + wrap), 0., 1.);
+    if (mat == 3) ndl = max(ndl, 0.55*abs(dot(n, uSun)) + 0.15);
+    float sh = shadow(vWorld, n);
+    vec3 sun = vec3(1.0, 0.86, 0.66) * 2.3;
+    vec3 amb = mix(vec3(0.24,0.21,0.15)*0.45, vec3(0.36,0.47,0.68)*0.62, n.y*0.5+0.5);
+    col = alb * (sun*ndl*sh + amb);
+  }
+  float fog = 1. - exp(-dist*0.0009);
+  vec3 fogCol = skyBase(normalize(vec3(V.x, 0.04, V.z)));
+  col = mix(col, fogCol, fog);
+  frag = vec4(tonemap(col), 1.);
+}`;
+
+const VS_SKY = `#version 300 es
+out vec2 vP;
+void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2))*2.-1.; vP = p; gl_Position = vec4(p, 0.9999, 1.); }`;
+
+const FS_SKY = `#version 300 es
+precision highp float;
+in vec2 vP;
+uniform vec3 uR, uU, uF;
+uniform vec2 uTan;
+out vec4 frag;
+${GLSL_COMMON}
+void main(){
+  vec3 d = normalize(uF + uR*vP.x*uTan.x + uU*vP.y*uTan.y);
+  vec3 c = skyBase(d);
+  float sd = dot(d, uSun);
+  if (d.y > 0.) {
+    vec2 cp = d.xz / (d.y + 0.12) * 1.1;
+    float n = fbm(cp + 3.7);
+    float cl = smoothstep(0.50, 0.78, n) * smoothstep(0.015, 0.22, d.y);
+    float lit = fbm(cp + 3.7 + uSun.xz*0.25);
+    vec3 cc = mix(vec3(1.25,1.08,0.92), vec3(0.62,0.62,0.72), smoothstep(0.45,0.85,lit));
+    cc += vec3(1.0,0.7,0.4) * pow(max(sd,0.), 6.) * 0.5;
+    c = mix(c, cc, cl*0.9);
+    c += vec3(1.0,0.92,0.75) * smoothstep(0.9992, 0.9997, sd) * 6. * (1.-cl);
+    c += vec3(1.0,0.75,0.45) * pow(max(sd,0.), 180.) * 0.8;
+  }
+  frag = vec4(tonemap(c), 1.);
+}`;
+
+// ---------------------------------------------------------------- WebGL setup
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, powerPreference: 'high-performance' });
+if (!gl) {
+  const el = document.getElementById('msg');
+  el.style.display = 'flex';
+  el.textContent = 'This animation needs WebGL 2, which is not available in this browser.';
+  return;
+}
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + '\n' + src);
+  return s;
+}
+function program(vs, fs, names) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  for (const n of names) u[n] = gl.getUniformLocation(p, n);
+  return { p, u };
+}
+const progScene = program(VS_SCENE, FS_SCENE, ['uVP', 'uPhase', 'uSway', 'uEye', 'uLightVP', 'uShadow', 'uShadowTexel', 'uSun']);
+const progDepth = program(VS_SCENE, FS_DEPTH, ['uVP', 'uPhase', 'uSway']);
+const progSky = program(VS_SKY, FS_SKY, ['uR', 'uU', 'uF', 'uTan', 'uSun']);
+
+const STRIDE = 48;
+function meshAttribs() {
+  for (let i = 0; i < 4; i++) { gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i, 3, gl.FLOAT, false, STRIDE, i * 12); }
+}
+function makeVAO(vertices, indices, instances, dynamic) {
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW);
+  meshAttribs();
+  const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+  let count = 0;
+  if (instances) {
+    const nb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nb);
+    gl.bufferData(gl.ARRAY_BUFFER, instances, gl.STATIC_DRAW);
+    for (let i = 0; i < 2; i++) {
+      gl.enableVertexAttribArray(4 + i);
+      gl.vertexAttribPointer(4 + i, 4, gl.FLOAT, false, 32, i * 16);
+      gl.vertexAttribDivisor(4 + i, 1);
+    }
+    count = instances.length / 8;
+  }
+  gl.bindVertexArray(null);
+  return { vao, vb, n: indices.length, count };
+}
+
+const built = buildStatic();
+const staticVAO = makeVAO(new Float32Array(built.m.v), new Uint32Array(built.m.i));
+const forest = buildForest();
+const conM = buildConifer(), broM = buildBroadleaf();
+const conVAO = makeVAO(new Float32Array(conM.v), new Uint32Array(conM.i), forest.con);
+const broVAO = makeVAO(new Float32Array(broM.v), new Uint32Array(broM.i), forest.bro);
+const flag = makeFlag(built.flagPole);
+const flagVAO = makeVAO(flag.update(0), flag.idx, null, true);
+const emptyVAO = gl.createVertexArray();
+
+function drawGeometry(u, withFlag, sway) {
+  gl.vertexAttrib4f(4, 0, 0, 0, 1);
+  gl.vertexAttrib4f(5, 1, 1, 1, 0);
+  gl.uniform1f(u.uSway, 0);
+  gl.bindVertexArray(staticVAO.vao);
+  gl.drawElements(gl.TRIANGLES, staticVAO.n, gl.UNSIGNED_INT, 0);
+  if (withFlag) {
+    gl.bindVertexArray(flagVAO.vao);
+    gl.drawElements(gl.TRIANGLES, flagVAO.n, gl.UNSIGNED_INT, 0);
+  }
+  gl.uniform1f(u.uSway, sway);
+  gl.bindVertexArray(conVAO.vao);
+  gl.drawElementsInstanced(gl.TRIANGLES, conVAO.n, gl.UNSIGNED_INT, 0, conVAO.count);
+  gl.bindVertexArray(broVAO.vao);
+  gl.drawElementsInstanced(gl.TRIANGLES, broVAO.n, gl.UNSIGNED_INT, 0, broVAO.count);
+  gl.bindVertexArray(null);
+}
+
+// ---- shadow map (the scene is static, so it is rendered once)
+const SH = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+const shadowTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, SH, SH);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+gl.bindTexture(gl.TEXTURE_2D, null);
+const shadowFBO = gl.createFramebuffer();
+const lightC = [0, 18, 0];
+const lightVP = mul(ortho(-158, 158, -158, 158, 120, 700),
+  lookAt([lightC[0] + SUN[0] * 400, lightC[1] + SUN[1] * 400, lightC[2] + SUN[2] * 400], lightC, [0, 1, 0]).m);
+
+gl.disable(gl.CULL_FACE);
+gl.enable(gl.DEPTH_TEST);
+gl.depthFunc(gl.LEQUAL);
+
+function renderShadow() {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFBO);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+  gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+  gl.viewport(0, 0, SH, SH);
+  gl.depthMask(true);
+  gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.5, 2.0);
+  gl.useProgram(progDepth.p);
+  gl.uniformMatrix4fv(progDepth.u.uVP, false, lightVP);
+  gl.uniform1f(progDepth.u.uPhase, 0);
+  drawGeometry(progDepth.u, false, 0);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+renderShadow();
+
+// ---------------------------------------------------------------- frame loop
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(canvas.clientWidth * dpr)), h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+const FOVY = 44 * Math.PI / 180;
+
+function frame(ms) {
+  resize();
+  const phase = ((ms / 1000) % LOOP_SECONDS) / LOOP_SECONDS * Math.PI * 2;   // 0..2pi per loop
+
+  // camera orbiting the castle
+  const aspect = canvas.width / canvas.height;
+  const wide = Math.max(1, 1.25 / aspect);                 // back off on narrow / portrait screens
+  const R = (86 + 7 * Math.sin(2 * phase + 0.6)) * wide;
+  const eye = [Math.sin(phase) * R, 49 + 8 * Math.sin(phase + 1.2), Math.cos(phase) * R];
+  const cam = lookAt(eye, [0, 47, 0], [0, 1, 0]);
+  const vp = mul(perspective(FOVY, aspect, 1.5, 3000), cam.m);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.depthMask(true);
+  gl.clearColor(0.6, 0.72, 0.88, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  // sky
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  gl.useProgram(progSky.p);
+  gl.uniform3fv(progSky.u.uR, cam.s); gl.uniform3fv(progSky.u.uU, cam.u); gl.uniform3fv(progSky.u.uF, cam.f);
+  const th = Math.tan(FOVY / 2);
+  gl.uniform2f(progSky.u.uTan, th * aspect, th);
+  gl.uniform3fv(progSky.u.uSun, SUN);
+  gl.bindVertexArray(emptyVAO);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+
+  // flag cloth
+  gl.bindBuffer(gl.ARRAY_BUFFER, flagVAO.vb);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, flag.update(phase));
+
+  // scene
+  const u = progScene.u;
+  gl.useProgram(progScene.p);
+  gl.uniformMatrix4fv(u.uVP, false, vp);
+  gl.uniformMatrix4fv(u.uLightVP, false, lightVP);
+  gl.uniform3fv(u.uEye, eye);
+  gl.uniform3fv(u.uSun, SUN);
+  gl.uniform1f(u.uPhase, phase);
+  gl.uniform1f(u.uShadowTexel, 1 / SH);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.uniform1i(u.uShadow, 0);
+  drawGeometry(u, true, 1);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+
+  requestAnimationFrame(frame);
+}
+canvas.addEventListener('webglcontextlost', e => e.preventDefault());
+canvas.addEventListener('webglcontextrestored', () => location.reload());
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

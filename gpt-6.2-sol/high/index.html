@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17261f">
+  <title>Hollowmere Keep · Realm Atlas</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="scene.js" defer></script>
+</head>
+<body>
+  <main class="atlas">
+    <canvas id="landscape" aria-label="An orbiting view of a medieval stone castle on a forested hill, with a red banner waving over its tallest tower."></canvas>
+    <div class="scrim" aria-hidden="true"></div>
+
+    <header class="masthead">
+      <div class="identity">
+        <div class="atlas-mark" aria-hidden="true">
+          <span class="mark-tower"></span>
+          <span class="mark-base"></span>
+        </div>
+        <span>Realm Atlas</span>
+      </div>
+      <div class="live-status"><span></span> Live orbit</div>
+    </header>
+
+    <section class="title-block" aria-labelledby="keep-name">
+      <p class="location">The Briarwood</p>
+      <h1 id="keep-name">Hollowmere <em>Keep</em></h1>
+      <p class="subtitle">A medieval stronghold above the forest canopy.</p>
+    </section>
+
+    <footer class="instruments" aria-hidden="true">
+      <div class="orbit">
+        <div class="orbit-label">
+          <span>Camera orbit</span>
+          <span id="orbit-percent">00%</span>
+        </div>
+        <div class="orbit-track"><div id="orbit-progress"></div></div>
+      </div>
+      <div class="navigation">
+        <div class="heading"><span>Heading</span><strong id="heading">034°</strong></div>
+        <div class="compass">
+          <span class="north">N</span>
+          <span class="east">E</span>
+          <span class="south">S</span>
+          <span class="west">W</span>
+          <div id="needle"></div>
+        </div>
+      </div>
+    </footer>
+
+    <p id="render-error" class="render-error" hidden>This scene needs a browser with WebGL 2 enabled.</p>
+  </main>
+</body>
+</html>

@@ -1,0 +1,259 @@
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("fonts/files/instrument-serif-latin-400-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("fonts/files/instrument-serif-latin-400-italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+  font-family: Arial, Helvetica, sans-serif;
+  color: #eeeade;
+  background: #17261f;
+  font-synthesis: none;
+  --inset: clamp(1.25rem, 4.15vw, 4.75rem);
+  --gold: #d6bb82;
+  --hairline: rgb(235 230 199 / 22%);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+
+.atlas {
+  position: relative;
+  min-height: 32rem;
+  height: 100vh;
+  height: 100svh;
+  overflow: hidden;
+  isolation: isolate;
+  background: linear-gradient(#3a5145, #192921 65%, #111a15);
+}
+
+#landscape, .scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#landscape { display: block; }
+
+.scrim {
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgb(10 20 15 / 85%) 0%, rgb(12 23 17 / 63%) 19%, rgb(15 26 20 / 17%) 41%, transparent 62%),
+    linear-gradient(0deg, rgb(8 16 12 / 91%), transparent 28%, transparent 82%, rgb(12 21 17 / 34%)),
+    radial-gradient(ellipse at 57% 43%, transparent 55%, rgb(9 19 14 / 35%));
+}
+
+.masthead, .instruments {
+  position: absolute;
+  left: var(--inset);
+  right: var(--inset);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.masthead {
+  top: 0;
+  min-height: 5.625rem;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.identity, .live-status, .location, .orbit-label, .heading span {
+  font-size: .66rem;
+  font-weight: 600;
+  letter-spacing: .21em;
+  text-transform: uppercase;
+}
+
+.identity, .live-status { display: flex; align-items: center; gap: .85rem; }
+
+.atlas-mark {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  position: relative;
+  border: 1px solid rgb(214 187 130 / 48%);
+  border-radius: 50%;
+  color: var(--gold);
+}
+
+.mark-tower {
+  width: 17px;
+  height: 15px;
+  background: currentColor;
+  clip-path: polygon(0 0, 24% 0, 24% 22%, 38% 22%, 38% 0, 62% 0, 62% 22%, 76% 22%, 76% 0, 100% 0, 100% 34%, 86% 45%, 86% 100%, 59% 100%, 59% 64%, 41% 64%, 41% 100%, 14% 100%, 14% 45%, 0 34%);
+}
+
+.mark-base {
+  position: absolute;
+  bottom: 7px;
+  width: 19px;
+  height: 1px;
+  background: currentColor;
+}
+
+.live-status { gap: .6rem; color: #e3dfcd; }
+.live-status > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #bed294;
+  box-shadow: 0 0 10px rgb(187 211 142 / 67%);
+}
+
+.title-block {
+  position: absolute;
+  top: 47%;
+  left: var(--inset);
+  width: max-content;
+  max-width: calc(100% - var(--inset) * 2);
+  transform: translateY(-32%);
+  text-shadow: 0 2px 28px rgb(11 20 12 / 30%);
+}
+
+.location {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+  color: var(--gold);
+  margin: 0 0 1.15rem;
+  letter-spacing: .28em;
+}
+.location::before { content: ""; width: 1.9rem; height: 1px; background: currentColor; }
+
+h1 {
+  margin: 0;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: clamp(4.25rem, 8.05vw, 9rem);
+  font-weight: 400;
+  letter-spacing: -.023em;
+  line-height: .83;
+}
+h1 em {
+  display: block;
+  color: #ded8b1;
+  font-weight: 400;
+  letter-spacing: -.045em;
+  margin-left: -.045em;
+  padding-right: .12em;
+}
+
+.subtitle {
+  margin: 1.65rem 0 0;
+  color: #d5d7c8;
+  font-size: clamp(.75rem, 1.1vw, .94rem);
+  line-height: 1.55;
+  letter-spacing: .035em;
+}
+
+.instruments {
+  bottom: 0;
+  min-height: 7.375rem;
+  border-top: 1px solid var(--hairline);
+}
+
+.orbit { width: min(11.5rem, 42vw); }
+.orbit-label {
+  color: #cbcdbb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+}
+#orbit-percent { color: var(--gold); font-variant-numeric: tabular-nums; }
+
+.orbit-track {
+  width: 100%;
+  height: 2px;
+  margin-top: .75rem;
+  background: rgb(227 224 193 / 26%);
+}
+#orbit-progress {
+  height: 100%;
+  width: 100%;
+  background: var(--gold);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.navigation { display: flex; align-items: center; gap: .95rem; }
+.heading { display: grid; gap: .32rem; text-align: right; }
+.heading span { color: #cbcdbb; }
+.heading strong {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.4rem;
+  font-weight: 400;
+  line-height: 1;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.compass {
+  width: 4rem;
+  height: 4rem;
+  border-radius: 50%;
+  border: 1px solid rgb(214 187 130 / 43%);
+  color: #bfc1ab;
+  position: relative;
+  display: grid;
+  place-items: center;
+  font-size: .46rem;
+}
+.compass span { position: absolute; }
+.compass .north { top: .27rem; color: var(--gold); }
+.compass .east { right: .28rem; }
+.compass .south { bottom: .27rem; }
+.compass .west { left: .28rem; }
+#needle {
+  width: .46rem;
+  height: 1.8rem;
+  background: linear-gradient(to bottom, #e0c58d 50%, #94a087 50%);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  transform: rotate(34deg);
+}
+
+.render-error {
+  position: absolute;
+  right: var(--inset);
+  bottom: 9rem;
+  left: var(--inset);
+  margin: 0;
+  color: #f5dfb6;
+  text-align: right;
+  font-size: .85rem;
+}
+.atlas.unavailable .instruments, .atlas.unavailable .live-status { visibility: hidden; }
+
+@media (max-width: 700px), (max-aspect-ratio: 5/4) {
+  .masthead { min-height: 4.4rem; }
+  .instruments { min-height: 5.3rem; }
+  .compass { width: 3.25rem; height: 3.25rem; }
+  #needle { height: 1.35rem; }
+  .title-block { top: auto; bottom: 7rem; transform: none; }
+  h1 { font-size: clamp(3.55rem, 14vw, 6.5rem); line-height: .9; }
+  h1 em { display: inline; margin-left: 0; }
+  .location { margin-bottom: .8rem; }
+  .subtitle { margin-top: .85rem; }
+  .scrim {
+    background:
+      linear-gradient(0deg, rgb(9 17 13 / 97%), rgb(10 20 14 / 58%) 32%, transparent 64%, rgb(13 24 18 / 42%)),
+      radial-gradient(ellipse at 56% 43%, transparent 55%, rgb(9 19 14 / 29%));
+  }
+}
+
+@media (max-width: 350px) {
+  .subtitle { max-width: 15rem; }
+  .heading span { display: none; }
+}
